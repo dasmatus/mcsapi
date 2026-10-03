@@ -67,6 +67,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod host;
+mod hot;
 
 use std::fmt;
 
@@ -75,6 +76,8 @@ pub use mcsapi_runtime::{AppId, InstanceId};
 pub use mcsapi_ui::{App, Theme, egui};
 pub use smithay::input::keyboard::Keysym;
 use smithay::reexports::calloop::channel;
+
+pub use hot::Hot;
 
 /// Where a window is drawn this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -391,7 +394,11 @@ impl<S: Shell + 'static> Compositor<S> {
     }
 
     /// Runs the session until its window closes or the shell quits.
+    ///
+    /// With the `hotpatch` feature in a debug build, this also listens for
+    /// patches from `dx serve --hot-patch`; see [`Hot`].
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        hot::connect();
         host::run(self)
     }
 }

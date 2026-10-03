@@ -43,9 +43,20 @@ background = false
 on_change_strategy = "kill_then_restart"
 kill = ["kill", "-s", "INT"]
 
+# [n] A nested desktop (the tiling example) in a window, rebuilt and
+# restarted on every save. For live patching without a restart, use
+# `dx serve --hot-patch` instead; see crates/mcsapi-compositor/README.md.
+[jobs.nested]
+command = ["cargo", "run", "-p", "mcsapi-compositor", "--example", "tiling", "--", "clock"]
+need_stdout = true
+allow_warnings = true
+background = false
+on_change_strategy = "kill_then_restart"
+
 [keybindings]
 c = "job:clippy"
 t = "job:test"
 d = "job:doc"
 e = "job:example"
 m = "job:mcp"
+n = "job:nested"
