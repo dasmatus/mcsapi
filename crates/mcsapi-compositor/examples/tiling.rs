@@ -79,6 +79,8 @@ impl Shell for Tiling {
                     frame,
                     client,
                     focused: focused == Some(p.window),
+                    tiled: mcsapi_compositor::Edges::ALL,
+                    maximized: false,
                 }
             })
             .collect()

@@ -87,18 +87,55 @@ pub struct Placement {
     pub client: Geometry,
     /// Whether the window has keyboard focus.
     pub focused: bool,
+    /// Edges that touch a neighbour or the screen edge; clients square their
+    /// corners and drop shadows there.
+    pub tiled: Edges,
+    /// Whether the window is maximized.
+    pub maximized: bool,
 }
 
 impl Placement {
-    /// A placement without decorations: content fills the frame.
+    /// A tiled placement without decorations: content fills the frame.
     pub fn undecorated(window: WindowId, frame: Geometry, focused: bool) -> Self {
         Self {
             window,
             frame,
             client: frame,
             focused,
+            tiled: Edges::ALL,
+            maximized: false,
         }
     }
+}
+
+/// A set of window edges.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Edges {
+    /// Left edge.
+    pub left: bool,
+    /// Right edge.
+    pub right: bool,
+    /// Top edge.
+    pub top: bool,
+    /// Bottom edge.
+    pub bottom: bool,
+}
+
+impl Edges {
+    /// No edges (a floating window).
+    pub const NONE: Self = Self {
+        left: false,
+        right: false,
+        top: false,
+        bottom: false,
+    };
+    /// All edges (a tiled window).
+    pub const ALL: Self = Self {
+        left: true,
+        right: true,
+        top: true,
+        bottom: true,
+    };
 }
 
 /// What a primary-button press handled by [`Shell::pointer_down`] did.
@@ -220,7 +257,9 @@ pub trait Shell: 'static {
     /// Release of a press the shell handled.
     fn pointer_up(&mut self) {}
 
-    /// Decides who gets a key. Called for presses and releases.
+    /// Decides who gets a key. Called for presses and for releases of keys
+    /// whose press was not consumed; releasing a consumed key is consumed
+    /// too, so clients never see half a shortcut.
     fn key(&mut self, _key: &KeyInput) -> KeyRoute {
         KeyRoute::Client
     }

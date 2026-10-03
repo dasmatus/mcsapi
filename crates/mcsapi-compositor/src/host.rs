@@ -2,7 +2,7 @@
 //! rendering.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     process::{Child, Command as Process},
     sync::Arc,
@@ -168,6 +168,8 @@ pub(crate) struct Host<S: Shell> {
     route: Option<Route>,
     buttons: u32,
     egui_mods: egui::Modifiers,
+    /// Keys whose press the shell consumed; their release is consumed too.
+    consumed_keys: HashSet<u32>,
 
     children: Vec<Child>,
 }
@@ -287,6 +289,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         route: None,
         buttons: 0,
         egui_mods: egui::Modifiers::default(),
+        consumed_keys: HashSet::new(),
         children: Vec::new(),
     };
     host.shell.set_output((size.w, size.h));
@@ -457,13 +460,19 @@ impl<S: Shell> Host<S> {
             if let Some(toplevel) = window.toplevel() {
                 toplevel.with_pending_state(|state| {
                     state.size = Some(p.client.size);
-                    for s in [
-                        ToplevelState::TiledLeft,
-                        ToplevelState::TiledRight,
-                        ToplevelState::TiledTop,
-                        ToplevelState::TiledBottom,
+                    let edges = p.tiled;
+                    for (s, on) in [
+                        (ToplevelState::TiledLeft, edges.left),
+                        (ToplevelState::TiledRight, edges.right),
+                        (ToplevelState::TiledTop, edges.top),
+                        (ToplevelState::TiledBottom, edges.bottom),
+                        (ToplevelState::Maximized, p.maximized),
                     ] {
-                        state.states.set(s);
+                        if on {
+                            state.states.set(s);
+                        } else {
+                            state.states.unset(s);
+                        }
                     }
                     if p.focused {
                         state.states.set(ToplevelState::Activated);
@@ -556,6 +565,7 @@ impl<S: Shell> Host<S> {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
                 let pressed = event.state() == KeyState::Pressed;
+                let keycode: u32 = event.key_code().into();
                 let Some(keyboard) = self.seat.get_keyboard() else {
                     return;
                 };
@@ -565,7 +575,7 @@ impl<S: Shell> Host<S> {
                     event.state(),
                     serial,
                     time,
-                    |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed),
+                    |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, keycode),
                 );
             }
             InputEvent::PointerMotionAbsolute { event } => {
@@ -737,7 +747,11 @@ impl<S: Shell> Host<S> {
         modifiers: &ModifiersState,
         handle: &KeysymHandle<'_>,
         pressed: bool,
+        keycode: u32,
     ) -> FilterResult<()> {
+        if !pressed && self.consumed_keys.remove(&keycode) {
+            return FilterResult::Intercept(());
+        }
         self.egui_mods = egui::Modifiers {
             alt: modifiers.alt,
             ctrl: modifiers.ctrl,
@@ -769,7 +783,12 @@ impl<S: Shell> Host<S> {
         };
         let mods = self.egui_mods;
         let events = match route {
-            KeyRoute::Consume => return FilterResult::Intercept(()),
+            KeyRoute::Consume => {
+                if pressed {
+                    self.consumed_keys.insert(keycode);
+                }
+                return FilterResult::Intercept(());
+            }
             KeyRoute::Chrome => &mut self.chrome_events,
             KeyRoute::Client => {
                 let focused = self.shell.focused();
