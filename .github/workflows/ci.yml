@@ -169,10 +169,22 @@ jobs:
           tool: cargo-audit
       - run: cargo audit
 
+  nix:
+    name: Nix flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      # Clippy, tests and docs for the default and GPUI builds, rustfmt, the
+      # headless example and every package; see `checks` in flake.nix.
+      - run: nix flake check -L
+      - name: Dev shell
+        run: nix develop -i -k TERM -k HOME -c cargo --version
+
   ci-success:
     name: CI success
     if: always()
-    needs: [fmt, clippy, test, docs, coverage, audit]
+    needs: [fmt, clippy, test, docs, coverage, audit, nix]
     runs-on: ubuntu-latest
     steps:
       - name: Check required jobs
