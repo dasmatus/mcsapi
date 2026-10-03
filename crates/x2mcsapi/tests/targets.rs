@@ -1,5 +1,5 @@
 use mcsapi_ui::egui::Color32;
-use x2mcsapi::{Style, Theme};
+use x2mcsapi::{Style, Theme, Tokens};
 
 fn lime_theme() -> Theme {
     Theme {
@@ -23,17 +23,47 @@ fn every_target_uses_the_shell_theme() {
 
 #[test]
 fn a_theme_change_reaches_every_target() {
-    let style = Style {
-        theme: lime_theme(),
-        ..Style::default()
-    };
-    assert_ne!(style.theme, Theme::default());
-    assert!(x2mcsapi::web_css(&style).contains("--x2mcsapi-accent: #123456;"));
+    let style = Style::from_theme(&lime_theme());
+    assert_ne!(style.tokens, Tokens::default());
+    assert!(x2mcsapi::web_css(&style).contains("--x2mcsapi-primary: #123456;"));
     assert!(x2mcsapi::inject_script(&style).contains("#123456"));
     assert!(
         x2mcsapi::gtk_css(&style).contains("@define-color accent_bg_color rgba(18, 52, 86, 1);")
     );
     assert!(x2mcsapi::qt_stylesheet(&style).contains("rgba(18, 52, 86, 1)"));
+}
+
+#[test]
+fn style_is_read_from_the_components() {
+    let style = Style::default();
+    assert_eq!(style.tokens, Tokens::default());
+    // Measured from mcsapi-components' Button, Input and Card.
+    let g = style.geometry;
+    assert_eq!((g.control_height, g.control_padding_x), (36.0, 16.0));
+    assert_eq!((g.small_control_height, g.small_padding_x), (32.0, 12.0));
+    assert_eq!((g.input_padding_x, g.input_padding_y), (12.0, 8.0));
+    assert_eq!(g.card_padding, 24.0);
+    assert_eq!((g.control_radius, g.card_radius), (6.0, 12.0));
+    assert_eq!((g.border_width, g.ring_width), (1.0, 2.0));
+    // egui's embedded Ubuntu-Light and Hack, as installed family names.
+    assert_eq!(style.fonts.proportional[0], "Ubuntu");
+    assert_eq!(style.fonts.weight, 300);
+    assert_eq!(style.fonts.monospace[0], "Hack");
+    assert_eq!(style.fonts.body_size, 14.0);
+    assert!(style.fonts.proportional.contains(&"Noto Emoji".to_owned()));
+    assert_eq!(style.fonts.proportional.last().unwrap(), "sans-serif");
+}
+
+#[test]
+fn a_token_change_reaches_every_target() {
+    let style = Style::from_tokens(Tokens {
+        radius: 9,
+        ..Tokens::default()
+    });
+    assert_eq!(style.geometry.card_radius, 18.0);
+    assert!(x2mcsapi::web_css(&style).contains("--x2mcsapi-radius: 9px;"));
+    assert!(x2mcsapi::gtk_css(&style).contains("border-radius: 9px;"));
+    assert!(x2mcsapi::qt_stylesheet(&style).contains("border-radius: 9px;"));
 }
 
 #[test]

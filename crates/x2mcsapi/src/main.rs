@@ -11,9 +11,10 @@ Usage:
       Print one generated target to standard output.
   x2mcsapi install [DIR]
       Write every target under DIR (default: $XDG_DATA_HOME or ~/.local/share).
-  x2mcsapi run [--qt] -- PROGRAM [ARGS...]
+  x2mcsapi run [--qt] [--electron] -- PROGRAM [ARGS...]
       Install, then start PROGRAM with the GTK theme selected. With --qt, also
-      pass the Qt style sheet with -stylesheet.";
+      pass the Qt style sheet with -stylesheet. With --electron, inject the
+      theme into every window and webview of an Electron or Chromium app.";
 
 fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
@@ -62,11 +63,19 @@ fn main() -> ExitCode {
             }
         }
         Some("run") => {
-            let qt = args.get(1).is_some_and(|arg| arg == "--qt");
-            let rest = &args[1 + usize::from(qt)..];
-            let program = match rest {
-                [separator, program, ..] if separator == "--" => program,
-                _ => return fail("run needs -- PROGRAM"),
+            let Some(separator) = args.iter().position(|arg| arg == "--") else {
+                return fail("run needs -- PROGRAM");
+            };
+            let (mut qt, mut electron) = (false, false);
+            for flag in &args[1..separator] {
+                match flag.as_str() {
+                    "--qt" => qt = true,
+                    "--electron" => electron = true,
+                    _ => return fail(&format!("unknown run option {flag}")),
+                }
+            }
+            let Some((program, program_args)) = args[separator + 1..].split_first() else {
+                return fail("run needs -- PROGRAM");
             };
             let Some(dir) = data_home() else {
                 return fail("neither XDG_DATA_HOME nor HOME is set");
@@ -75,18 +84,30 @@ fn main() -> ExitCode {
                 eprintln!("x2mcsapi: writing to {}: {error}", dir.display());
                 return ExitCode::FAILURE;
             }
-            let mut command = Command::new(program);
-            command.args(&rest[2..]).env("GTK_THEME", "x2mcsapi");
+            let mut extra: Vec<std::ffi::OsString> = Vec::new();
             if qt {
-                command.arg("-stylesheet").arg(dir.join("qt/x2mcsapi.qss"));
+                extra.push("-stylesheet".into());
+                extra.push(dir.join("qt/x2mcsapi.qss").into());
             }
-            match command.status() {
+            let all_args = program_args.iter().map(Into::into).chain(extra);
+            let mut command = if electron {
+                x2mcsapi::electron::command(program)
+            } else {
+                Command::new(program)
+            };
+            command.args(all_args).env("GTK_THEME", "x2mcsapi");
+            let child = if electron {
+                x2mcsapi::electron::spawn(command, x2mcsapi::inject_script(&style))
+            } else {
+                command.spawn()
+            };
+            match child.and_then(|mut child| child.wait()) {
                 Ok(status) => status
                     .code()
                     .and_then(|code| u8::try_from(code).ok())
                     .map_or(ExitCode::FAILURE, ExitCode::from),
                 Err(error) => {
-                    eprintln!("x2mcsapi: starting {program}: {error}");
+                    eprintln!("x2mcsapi: running {program}: {error}");
                     ExitCode::FAILURE
                 }
             }
