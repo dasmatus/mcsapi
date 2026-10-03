@@ -1,0 +1,43 @@
+{
+  "name": "mcsapi",
+  "version": "0.1.0",
+  "description": "TypeScript bindings for mcsapi, an xmonad-like desktop policy for Smithay compositors",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasmatus/mcsapi.git",
+    "directory": "bindings/node"
+  },
+  "private": true,
+  "type": "commonjs",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "engines": {
+    "node": ">= 22.18"
+  },
+  "napi": {
+    "binaryName": "mcsapi",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu"
+    ],
+    "constEnum": false
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mts",
+    "example": "node examples/engine.mts"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.10.6",
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.0"
+  }
+}
