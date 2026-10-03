@@ -124,7 +124,7 @@ pub fn gpui_workspace_bar(
                 .bg(color(theme.surface))
                 .border_1()
                 .border_color(color(if active { theme.accent } else { theme.border }))
-                .focus_visible(|style| style.border_2().border_color(color(theme.foreground)))
+                .focus(|style| style.border_2().border_color(color(theme.foreground)))
                 .child(label(id, active))
                 .on_click(move |_, window, cx| click(id, window, cx))
                 .on_key_down(move |event, window, cx| {
