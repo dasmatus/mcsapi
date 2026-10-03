@@ -13,4 +13,6 @@ glow = "0.17"
 mcsapi.workspace = true
 mcsapi-runtime.workspace = true
 mcsapi-ui.workspace = true
-smithay = { workspace = true, features = ["backend_winit", "desktop", "renderer_gl"] }
+rustix = { version = "1.1", default-features = false, features = ["net", "process", "std"] }
+x11rb = { version = "0.13", default-features = false, features = ["res"] }
+smithay = { workspace = true, features = ["backend_winit", "desktop", "renderer_gl", "xwayland"] }

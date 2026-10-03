@@ -8,6 +8,8 @@
 //!
 //! - **Wayland clients** (foot, GTK, Qt, ...) connecting to the socket. They
 //!   are asked to use server-side decorations.
+//! - **X11 apps** through Xwayland, which starts when the first X11 client
+//!   connects and exits after the last one (`Xwayland` must be on `PATH`).
 //! - **In-process apps** registered with [`mcsapi_runtime`] and drawn with
 //!   [`mcsapi_ui::App`], through an [`Apps`] provider. They get the same
 //!   title bars, tiling and focus as Wayland clients.
@@ -67,6 +69,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod host;
+mod xwayland;
 
 use std::fmt;
 
@@ -238,6 +241,11 @@ pub trait Shell: 'static {
     /// `WAYLAND_DISPLAY`.
     fn session_started(&mut self, _wayland_display: &str) {}
 
+    /// X11 apps can connect with this `DISPLAY` (for example `:0`). Xwayland
+    /// starts when the first one connects and stops after the last one
+    /// exits. Not called when Xwayland is missing or turned off.
+    fn x11_display_reserved(&mut self, _display: &str) {}
+
     /// Called about every frame for clocks and other polled state.
     fn tick(&mut self) {}
 
@@ -344,6 +352,7 @@ pub struct Compositor<S> {
     title: String,
     launch: Vec<String>,
     jobs: Option<channel::Channel<Job<S>>>,
+    xwayland: bool,
 }
 
 impl<S: Shell + 'static> Compositor<S> {
@@ -356,6 +365,7 @@ impl<S: Shell + 'static> Compositor<S> {
             title: "mcsapi".into(),
             launch: Vec::new(),
             jobs: None,
+            xwayland: true,
         }
     }
 
@@ -374,6 +384,13 @@ impl<S: Shell + 'static> Compositor<S> {
     /// Title of the nested window.
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
+        self
+    }
+
+    /// Whether to run X11 apps through Xwayland, started on demand (on by
+    /// default; needs `Xwayland` on `PATH`).
+    pub fn xwayland(mut self, enabled: bool) -> Self {
+        self.xwayland = enabled;
         self
     }
 

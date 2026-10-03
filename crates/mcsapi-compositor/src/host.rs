@@ -4,7 +4,8 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
-    process::{Child, Command as Process},
+    os::unix::net::UnixStream,
+    process::{Child, Command as Process, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -18,7 +19,7 @@ use smithay::{
             KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
         },
         renderer::{
-            Color32F, Frame, Renderer,
+            Color32F, Frame, Renderer, RendererSuper,
             element::{
                 AsRenderElements, Element, RenderElement, surface::WaylandSurfaceRenderElement,
             },
@@ -28,7 +29,7 @@ use smithay::{
         winit::{self, WinitEvent, WinitGraphicsBackend, WinitInput},
     },
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
-    delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_xdg_decoration, delegate_xdg_shell, delegate_xwayland_shell,
     desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         Seat, SeatHandler, SeatState,
@@ -38,7 +39,8 @@ use smithay::{
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
-            EventLoop, Interest, LoopSignal, Mode as CalloopMode, PostAction, channel,
+            EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction,
+            RegistrationToken, channel,
             generic::Generic,
             timer::{TimeoutAction, Timer},
         },
@@ -61,6 +63,7 @@ use smithay::{
             is_sync_subsurface, with_states,
         },
         output::{OutputHandler, OutputManagerState},
+        seat::WaylandFocus,
         selection::{
             SelectionHandler,
             data_device::{
@@ -75,12 +78,18 @@ use smithay::{
         },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
+        xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
+    },
+    xwayland::{
+        X11Surface, X11Wm, XWayland, XWaylandClientData, XWaylandEvent, XwmHandler,
+        xwm::{Reorder, ResizeEdge, WmWindowProperty, X11Window, XwmId},
     },
 };
 
 use crate::{
     Apps, ClientRequest, Command, Compositor, InstanceId, Job, KeyInput, KeyRoute, Modifiers,
     Placement, Press, Shell, egui,
+    xwayland::{self, Focus, Reservation},
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -113,8 +122,8 @@ struct Pass {
 /// Window content. Few windows exist, so the variant size gap is harmless.
 #[allow(clippy::large_enum_variant)]
 enum Content {
-    /// A Wayland client toplevel.
-    Wayland(Window),
+    /// A Wayland client toplevel, or an X11 window through Xwayland.
+    Client(Window),
     /// An in-process app instance with its own egui context and input queue.
     Internal {
         instance: InstanceId,
@@ -132,10 +141,41 @@ enum Route {
     Content,
 }
 
+/// The Xwayland server's lifecycle.
+enum X11 {
+    /// No Xwayland (not installed, or turned off).
+    Off,
+    /// The display is reserved; the server starts on the first connection.
+    Idle {
+        reservation: Reservation,
+        sources: Vec<RegistrationToken>,
+    },
+    /// The server was spawned and is starting up.
+    Starting {
+        display: u32,
+        early: Vec<UnixStream>,
+        source: RegistrationToken,
+        client: Client,
+    },
+    /// The server runs with the window manager attached.
+    Running {
+        display: u32,
+        source: RegistrationToken,
+        client: Client,
+    },
+    /// The server was shut down; the display is reserved again as soon as
+    /// the old server has let go of its sockets.
+    Stopped { display: u32 },
+}
+
+/// Seconds without X11 clients before Xwayland is shut down.
+const X11_IDLE_SECS: u64 = 5;
+
 /// Compositor state, generic over the desktop shell.
 pub(crate) struct Host<S: Shell> {
     start: Instant,
     display: DisplayHandle,
+    handle: LoopHandle<'static, Self>,
     signal: LoopSignal,
     socket_name: OsString,
 
@@ -146,6 +186,7 @@ pub(crate) struct Host<S: Shell> {
     _output_manager_state: OutputManagerState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
+    xwayland_shell_state: XWaylandShellState,
     popups: PopupManager,
     seat: Seat<Self>,
     space: Space<Window>,
@@ -172,6 +213,23 @@ pub(crate) struct Host<S: Shell> {
     consumed_keys: HashSet<u32>,
 
     children: Vec<Child>,
+
+    x11: X11,
+    /// The X11 display number clients use, while Xwayland is available.
+    x11_display: Option<u32>,
+    /// X11 window managers by ID: the current server's, plus a stopped
+    /// server's until its connection reports the disconnect.
+    xwms: HashMap<XwmId, X11Wm>,
+    /// The current server's window manager.
+    xwm: Option<XwmId>,
+    /// Results of background X11 client counts.
+    x11_probe: Option<channel::Sender<Option<usize>>>,
+    x11_probing: bool,
+    /// Since when Xwayland has had no clients besides the window manager.
+    x11_idle_since: Option<Instant>,
+    /// Mapped override-redirect X11 windows (menus, tooltips), drawn above
+    /// all other windows at the position the client chose.
+    overlays: Vec<Window>,
 }
 
 /// Per-client Wayland state.
@@ -193,8 +251,9 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         title,
         launch,
         jobs,
+        xwayland: with_xwayland,
     } = config;
-    let mut event_loop: EventLoop<Host<S>> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, Host<S>> = EventLoop::try_new()?;
     let display: Display<Host<S>> = Display::new()?;
     let dh = display.handle();
 
@@ -261,6 +320,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
     let mut host = Host {
         start: Instant::now(),
         display: dh.clone(),
+        handle: event_loop.handle(),
         signal: event_loop.get_signal(),
         socket_name,
         compositor_state: CompositorState::new::<Host<S>>(&dh),
@@ -269,6 +329,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         shm_state: ShmState::new::<Host<S>>(&dh, vec![]),
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
+        xwayland_shell_state: XWaylandShellState::new::<Host<S>>(&dh),
         seat_state,
         popups: PopupManager::default(),
         seat,
@@ -291,10 +352,40 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         egui_mods: egui::Modifiers::default(),
         consumed_keys: HashSet::new(),
         children: Vec::new(),
+        x11: X11::Off,
+        x11_display: None,
+        xwms: HashMap::new(),
+        xwm: None,
+        x11_probe: None,
+        x11_probing: false,
+        x11_idle_since: None,
+        overlays: Vec::new(),
     };
     host.shell.set_output((size.w, size.h));
     host.shell
         .session_started(&host.socket_name.to_string_lossy());
+    if with_xwayland && xwayland::available() {
+        let (sender, probes) = channel::channel();
+        host.x11_probe = Some(sender);
+        event_loop
+            .handle()
+            .insert_source(probes, |event, _, host| {
+                if let channel::Event::Msg(count) = event {
+                    host.x11_probed(count);
+                }
+            })?;
+        host.reserve_x11(None);
+        if let Some(display) = host.x11_display {
+            host.shell.x11_display_reserved(&format!(":{display}"));
+        }
+        event_loop.handle().insert_source(
+            Timer::from_duration(Duration::from_millis(500)),
+            |_, _, host| {
+                host.check_x11();
+                TimeoutAction::ToDuration(Duration::from_millis(500))
+            },
+        )?;
+    }
 
     event_loop
         .handle()
@@ -332,6 +423,9 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
     for child in &mut host.children {
         let _ = child.kill();
     }
+    host.xwm = None;
+    host.xwms.clear();
+    host.x11 = X11::Off;
     Ok(())
 }
 
@@ -390,15 +484,19 @@ impl<S: Shell> Host<S> {
             .ok()
             .filter(|l| l.to_uppercase().contains("UTF-8"))
             .unwrap_or_else(|| "C.UTF-8".into());
-        let spawned = Process::new(program)
+        let mut process = Process::new(program);
+        process
             .args(args)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env("XDG_SESSION_TYPE", "wayland")
             .env("GDK_BACKEND", "wayland")
             .env("QT_QPA_PLATFORM", "wayland")
-            .env("LANG", lang)
-            .env_remove("DISPLAY")
-            .spawn();
+            .env("LANG", lang);
+        match self.x11_display {
+            Some(display) => process.env("DISPLAY", format!(":{display}")),
+            None => process.env_remove("DISPLAY"),
+        };
+        let spawned = process.spawn();
         match spawned {
             Ok(child) => self.children.push(child),
             Err(e) => eprintln!("mcsapi-compositor: cannot launch {name}: {e}"),
@@ -407,9 +505,11 @@ impl<S: Shell> Host<S> {
 
     fn close(&mut self, window: WindowId) {
         match self.windows.get(&window) {
-            Some(Content::Wayland(w)) => {
+            Some(Content::Client(w)) => {
                 if let Some(toplevel) = w.toplevel() {
                     toplevel.send_close();
+                } else if let Some(x11) = w.x11_surface() {
+                    let _ = x11.close();
                 }
             }
             Some(Content::Internal { instance, .. }) => {
@@ -436,9 +536,14 @@ impl<S: Shell> Host<S> {
 
     fn wayland_window_of(&self, surface: &WlSurface) -> Option<(WindowId, &Window)> {
         self.windows.iter().find_map(|(id, content)| match content {
-            Content::Wayland(w) if w.toplevel().is_some_and(|t| t.wl_surface() == surface) => {
-                Some((*id, w))
-            }
+            Content::Client(w) if w.wl_surface().as_deref() == Some(surface) => Some((*id, w)),
+            _ => None,
+        })
+    }
+
+    fn x11_window_of(&self, surface: &X11Surface) -> Option<WindowId> {
+        self.windows.iter().find_map(|(id, content)| match content {
+            Content::Client(w) if w.x11_surface() == Some(surface) => Some(*id),
             _ => None,
         })
     }
@@ -447,14 +552,14 @@ impl<S: Shell> Host<S> {
     fn sync(&mut self) {
         let placements = self.shell.placements();
         for (id, content) in &self.windows {
-            if let Content::Wayland(window) = content
+            if let Content::Client(window) = content
                 && !placements.iter().any(|p| p.window == *id)
             {
                 self.space.unmap_elem(window);
             }
         }
         for p in &placements {
-            let Some(Content::Wayland(window)) = self.windows.get(&p.window) else {
+            let Some(Content::Client(window)) = self.windows.get(&p.window) else {
                 continue;
             };
             if let Some(toplevel) = window.toplevel() {
@@ -481,22 +586,44 @@ impl<S: Shell> Host<S> {
                     }
                 });
                 toplevel.send_pending_configure();
+            } else if let Some(x11) = window.x11_surface() {
+                if x11.geometry() != p.client {
+                    let _ = x11.configure(p.client);
+                }
+                let _ = x11.set_activated(p.focused);
+                let _ = x11.set_maximized(p.maximized);
             }
             let offset = window.geometry().loc;
             self.space
                 .map_element(window.clone(), p.client.loc - offset, false);
             self.space.raise_element(window, false);
         }
+        for overlay in &self.overlays {
+            if let Some(x11) = overlay.x11_surface() {
+                self.space
+                    .map_element(overlay.clone(), x11.geometry().loc, false);
+                self.space.raise_element(overlay, false);
+            }
+        }
 
         let focused = self.shell.focused();
         if focused != self.keyboard_focus {
             self.keyboard_focus = focused;
-            let surface = focused.and_then(|id| match self.windows.get(&id) {
-                Some(Content::Wayland(w)) => w.toplevel().map(|t| t.wl_surface().clone()),
+            let target = focused.and_then(|id| match self.windows.get(&id) {
+                Some(Content::Client(w)) => match (w.toplevel(), w.x11_surface()) {
+                    (Some(t), _) => Some(Focus::Wayland(t.wl_surface().clone())),
+                    (None, Some(x11)) => Some(Focus::X11(x11.clone())),
+                    _ => None,
+                },
                 _ => None,
             });
+            if let (Some(xwm), Some(Focus::X11(x11))) =
+                (self.xwm.and_then(|id| self.xwms.get_mut(&id)), &target)
+            {
+                let _ = xwm.raise_window(x11);
+            }
             if let Some(keyboard) = self.seat.get_keyboard() {
-                keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
+                keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
             }
         }
     }
@@ -998,21 +1125,28 @@ impl<S: Shell> Host<S> {
         }
 
         // Import client buffers before starting the frame.
+        let render_window = |renderer: &mut GlesRenderer, w: &Window| {
+            self.space
+                .element_location(w)
+                .map(|loc| {
+                    w.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                        renderer,
+                        loc.to_physical_precise_round(scale),
+                        scale,
+                        1.0,
+                    )
+                })
+                .unwrap_or_default()
+        };
+        let overlays: Vec<_> = self
+            .overlays
+            .iter()
+            .map(|w| render_window(renderer, w))
+            .collect();
         let mut surfaces: Vec<Vec<WaylandSurfaceRenderElement<GlesRenderer>>> = Vec::new();
         for p in placements {
             let elements = match self.windows.get(&p.window) {
-                Some(Content::Wayland(w)) => self
-                    .space
-                    .element_location(w)
-                    .map(|loc| {
-                        w.render_elements(
-                            renderer,
-                            loc.to_physical_precise_round(scale),
-                            scale,
-                            1.0,
-                        )
-                    })
-                    .unwrap_or_default(),
+                Some(Content::Client(w)) => render_window(renderer, w),
                 _ => Vec::new(),
             };
             surfaces.push(elements);
@@ -1036,17 +1170,10 @@ impl<S: Shell> Host<S> {
                 let painter = egui.painter.as_mut().expect("created above");
                 paint(&gl, painter, screen_px, &mut pass);
             }
-            // Elements come topmost first.
-            for element in elements.iter().rev() {
-                let dst = element.geometry(scale);
-                element.draw(
-                    &mut frame,
-                    element.src(),
-                    dst,
-                    &[Rectangle::from_size(dst.size)],
-                    &[],
-                )?;
-            }
+            draw_elements(&mut frame, elements, scale)?;
+        }
+        for elements in &overlays {
+            draw_elements(&mut frame, elements, scale)?;
         }
         let chrome_painter = self.chrome.painter.as_mut().expect("created above");
         paint(&gl, chrome_painter, screen_px, &mut chrome);
@@ -1082,13 +1209,426 @@ impl<S: Shell> Host<S> {
             app_id.as_deref().unwrap_or("app"),
             title.as_deref().unwrap_or_default(),
         );
-        self.windows.insert(id, Content::Wayland(window));
+        self.windows.insert(id, Content::Client(window));
         self.sync();
         if !toplevel.is_initial_configure_sent() {
             toplevel.send_configure();
         }
         self.run_commands();
     }
+}
+
+impl<S: Shell + 'static> Host<S> {
+    /// Reserves an X11 display (the same number again after a restart) and
+    /// waits for the first client to start Xwayland.
+    fn reserve_x11(&mut self, display: Option<u32>) {
+        let reservation = match (Reservation::new(display), display) {
+            (Ok(r), _) => r,
+            // The previous server may still hold the sockets; retry later.
+            (Err(_), Some(display)) => {
+                self.x11 = X11::Stopped { display };
+                return;
+            }
+            (Err(e), None) => {
+                eprintln!("mcsapi-compositor: X11 apps unavailable, no display: {e}");
+                self.x11 = X11::Off;
+                self.x11_display = None;
+                return;
+            }
+        };
+        let mut sources = Vec::new();
+        for listener in &reservation.listeners {
+            let Ok(listener) = listener.try_clone() else {
+                continue;
+            };
+            let source = Generic::new(listener, Interest::READ, CalloopMode::Level);
+            // Start outside this callback: calloop drops a source removed
+            // from its own callback only afterwards, and Xwayland needs the
+            // sockets closed first.
+            match self.handle.insert_source(source, |_, _, host| {
+                host.handle.insert_idle(|host| host.start_xwayland());
+                Ok(PostAction::Continue)
+            }) {
+                Ok(token) => sources.push(token),
+                Err(e) => eprintln!("mcsapi-compositor: cannot watch the X11 socket: {e}"),
+            }
+        }
+        self.x11_display = Some(reservation.display);
+        self.x11 = X11::Idle {
+            reservation,
+            sources,
+        };
+    }
+
+    /// An X11 client connected: hand the display to a new Xwayland.
+    fn start_xwayland(&mut self) {
+        let X11::Idle {
+            reservation,
+            sources,
+        } = std::mem::replace(&mut self.x11, X11::Off)
+        else {
+            return;
+        };
+        for token in sources {
+            self.handle.remove(token);
+        }
+        let display = reservation.display;
+        let early = reservation.release();
+        let spawned = XWayland::spawn(
+            &self.display,
+            Some(display),
+            std::iter::empty::<(&str, &str)>(),
+            true,
+            Stdio::null(),
+            Stdio::null(),
+            |_| {},
+        );
+        let started = spawned
+            .map_err(|e| e.to_string())
+            .and_then(|(xwayland, client)| {
+                self.handle
+                    .insert_source(xwayland, |event, _, host| host.xwayland_event(event))
+                    .map(|source| (source, client))
+                    .map_err(|e| e.to_string())
+            });
+        match started {
+            Ok((source, client)) => {
+                self.x11 = X11::Starting {
+                    display,
+                    early,
+                    source,
+                    client,
+                };
+            }
+            Err(e) => {
+                eprintln!("mcsapi-compositor: cannot start Xwayland: {e}");
+                self.reserve_x11(Some(display));
+            }
+        }
+    }
+
+    fn xwayland_event(&mut self, event: XWaylandEvent) {
+        let X11::Starting {
+            display,
+            early,
+            source,
+            client,
+        } = std::mem::replace(&mut self.x11, X11::Off)
+        else {
+            return;
+        };
+        match event {
+            XWaylandEvent::Ready { x11_socket, .. } => {
+                match X11Wm::start_wm(self.handle.clone(), x11_socket, client.clone()) {
+                    Ok(wm) => {
+                        self.xwm = Some(wm.id());
+                        self.xwms.insert(wm.id(), wm);
+                    }
+                    Err(e) => eprintln!("mcsapi-compositor: X11 window manager failed: {e}"),
+                }
+                for stream in early {
+                    if let Err(e) = xwayland::relay(stream, display) {
+                        eprintln!("mcsapi-compositor: cannot pass an X11 client on: {e}");
+                    }
+                }
+                self.x11 = X11::Running {
+                    display,
+                    source,
+                    client,
+                };
+            }
+            XWaylandEvent::Error => {
+                eprintln!("mcsapi-compositor: Xwayland exited during startup");
+                self.handle.remove(source);
+                self.reserve_x11(Some(display));
+            }
+        }
+    }
+
+    /// Watches the server: notices when it exits, shuts it down once no X11
+    /// client has been connected for a while, and re-reserves the display.
+    fn check_x11(&mut self) {
+        if let X11::Stopped { display } = self.x11 {
+            self.reserve_x11(Some(display));
+            return;
+        }
+        let (display, source, client) = match &self.x11 {
+            X11::Starting {
+                display,
+                source,
+                client,
+                ..
+            }
+            | X11::Running {
+                display,
+                source,
+                client,
+            } => (*display, *source, client.clone()),
+            X11::Off | X11::Idle { .. } | X11::Stopped { .. } => return,
+        };
+        if self
+            .display
+            .backend_handle()
+            .get_client_data(client.id())
+            .is_ok()
+        {
+            self.probe_x11(display);
+            return;
+        }
+        self.stop_xwayland(display, source);
+    }
+
+    /// Counts X11 clients off the event loop (the X server may be waiting
+    /// on this compositor), unless windows show it is in use.
+    fn probe_x11(&mut self, display: u32) {
+        let in_use = !self.overlays.is_empty()
+            || self
+                .windows
+                .values()
+                .any(|c| matches!(c, Content::Client(w) if w.x11_surface().is_some()));
+        if in_use || !matches!(self.x11, X11::Running { .. }) {
+            self.x11_idle_since = None;
+            return;
+        }
+        if self.x11_probing {
+            return;
+        }
+        let Some(sender) = self.x11_probe.clone() else {
+            return;
+        };
+        self.x11_probing = true;
+        let spawned = std::thread::Builder::new()
+            .name("xwayland-probe".into())
+            .spawn(move || {
+                let _ = sender.send(xwayland::other_clients(display));
+            });
+        if spawned.is_err() {
+            self.x11_probing = false;
+        }
+    }
+
+    fn x11_probed(&mut self, clients: Option<usize>) {
+        self.x11_probing = false;
+        let X11::Running {
+            display, source, ..
+        } = self.x11
+        else {
+            return;
+        };
+        match clients {
+            Some(0) => {
+                let since = *self.x11_idle_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_secs(X11_IDLE_SECS) {
+                    self.stop_xwayland(display, source);
+                }
+            }
+            Some(_) => self.x11_idle_since = None,
+            None => {}
+        }
+    }
+
+    /// Shuts the server down (dropping it disconnects it) and forgets its
+    /// windows; the display is reserved again on the next check.
+    fn stop_xwayland(&mut self, display: u32, source: RegistrationToken) {
+        self.x11_idle_since = None;
+        self.xwm = None;
+        self.overlays.clear();
+        let gone: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter_map(|(id, c)| match c {
+                Content::Client(w) if w.x11_surface().is_some() => Some(*id),
+                _ => None,
+            })
+            .collect();
+        for id in gone {
+            self.forget_window(id);
+        }
+        // Dropping the source only disconnects Xwayland on the next Wayland
+        // dispatch, which may be a while when nothing else is running, so
+        // ask the process to quit as well. (Its Wayland and X11 sockets were
+        // created here, so their peer credentials name this process.)
+        let pid = xwayland::server_pid(display);
+        self.handle.remove(source);
+        if let Some(pid) = pid {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+        }
+        self.x11 = X11::Stopped { display };
+    }
+
+    /// Drops a client window that no longer exists.
+    fn forget_window(&mut self, id: WindowId) {
+        if let Some(Content::Client(window)) = self.windows.remove(&id) {
+            self.space.unmap_elem(&window);
+            self.shell.unmap_window(id);
+            if self.keyboard_focus == Some(id) {
+                self.keyboard_focus = None;
+            }
+        }
+    }
+
+    fn remove_x11(&mut self, window: &X11Surface) {
+        if let Some(i) = self
+            .overlays
+            .iter()
+            .position(|w| w.x11_surface() == Some(window))
+        {
+            let overlay = self.overlays.remove(i);
+            self.space.unmap_elem(&overlay);
+        }
+        if let Some(id) = self.x11_window_of(window) {
+            self.forget_window(id);
+        }
+    }
+}
+
+impl<S: Shell + 'static> XWaylandShellHandler for Host<S> {
+    fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
+        &mut self.xwayland_shell_state
+    }
+}
+
+impl<S: Shell + 'static> XwmHandler for Host<S> {
+    fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
+        self.xwms
+            .get_mut(&xwm)
+            .expect("a window manager gets events until it disconnects")
+    }
+
+    fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+
+    fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+
+    fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if self.x11_window_of(&window).is_some() {
+            return;
+        }
+        let _ = window.set_mapped(true);
+        let class = window.class();
+        let id = self.shell.map_window(
+            if class.is_empty() { "x11" } else { &class },
+            &window.title(),
+        );
+        self.windows
+            .insert(id, Content::Client(Window::new_x11_window(window)));
+        self.sync();
+        self.run_commands();
+    }
+
+    fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let overlay = Window::new_x11_window(window.clone());
+        self.space
+            .map_element(overlay.clone(), window.geometry().loc, false);
+        self.overlays.push(overlay);
+    }
+
+    fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.remove_x11(&window);
+        if !window.is_override_redirect() {
+            let _ = window.set_mapped(false);
+        }
+    }
+
+    fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.remove_x11(&window);
+    }
+
+    fn configure_request(
+        &mut self,
+        _xwm: XwmId,
+        window: X11Surface,
+        x: Option<i32>,
+        y: Option<i32>,
+        w: Option<u32>,
+        h: Option<u32>,
+        _reorder: Option<Reorder>,
+    ) {
+        // Managed windows keep the shell's placement; others get what they
+        // ask for until they are mapped.
+        if self.x11_window_of(&window).is_some() {
+            let _ = window.configure(None);
+            return;
+        }
+        let mut geometry = window.geometry();
+        geometry.loc.x = x.unwrap_or(geometry.loc.x);
+        geometry.loc.y = y.unwrap_or(geometry.loc.y);
+        geometry.size.w = w.map_or(geometry.size.w, |w| w as i32);
+        geometry.size.h = h.map_or(geometry.size.h, |h| h as i32);
+        let _ = window.configure(geometry);
+    }
+
+    fn configure_notify(
+        &mut self,
+        _xwm: XwmId,
+        window: X11Surface,
+        geometry: Rectangle<i32, Logical>,
+        _above: Option<X11Window>,
+    ) {
+        if let Some(overlay) = self
+            .overlays
+            .iter()
+            .find(|w| w.x11_surface() == Some(&window))
+        {
+            self.space.map_element(overlay.clone(), geometry.loc, false);
+        }
+    }
+
+    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
+        if property == WmWindowProperty::Title
+            && let Some(id) = self.x11_window_of(&window)
+        {
+            self.shell.set_title(id, &window.title());
+        }
+    }
+
+    fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(id) = self.x11_window_of(&window) {
+            self.shell.client_request(id, ClientRequest::Maximize);
+        }
+    }
+
+    fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(id) = self.x11_window_of(&window) {
+            self.shell.client_request(id, ClientRequest::Minimize);
+        }
+    }
+
+    fn resize_request(
+        &mut self,
+        _xwm: XwmId,
+        _window: X11Surface,
+        _button: u32,
+        _resize_edge: ResizeEdge,
+    ) {
+    }
+
+    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+
+    fn disconnected(&mut self, xwm: XwmId) {
+        self.xwms.remove(&xwm);
+        if self.xwm == Some(xwm) {
+            self.xwm = None;
+        }
+    }
+}
+
+/// Draws a window's render elements, which come topmost first.
+fn draw_elements(
+    frame: &mut <GlesRenderer as RendererSuper>::Frame<'_, '_>,
+    elements: &[WaylandSurfaceRenderElement<GlesRenderer>],
+    scale: Scale<f64>,
+) -> Result {
+    for element in elements.iter().rev() {
+        let dst = element.geometry(scale);
+        element.draw(
+            frame,
+            element.src(),
+            dst,
+            &[Rectangle::from_size(dst.size)],
+            &[],
+        )?;
+    }
+    Ok(())
 }
 
 /// Draws the pointer above everything (the nested window hides the host's).
@@ -1172,9 +1712,12 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        if let Some(state) = client.get_data::<XWaylandClientData>() {
+            return &state.compositor_state;
+        }
         &client
             .get_data::<ClientState>()
-            .expect("every client is inserted with ClientState")
+            .expect("every other client is inserted with ClientState")
             .compositor_state
     }
 
@@ -1187,6 +1730,13 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
             }
             if let Some((_, window)) = self.wayland_window_of(&root) {
                 window.on_commit();
+            }
+            if let Some(overlay) = self
+                .overlays
+                .iter()
+                .find(|w| w.wl_surface().as_deref() == Some(&root))
+            {
+                overlay.on_commit();
             }
         }
         self.manage_on_first_commit(surface);
@@ -1303,7 +1853,7 @@ impl<S: Shell> ShmHandler for Host<S> {
 }
 
 impl<S: Shell + 'static> SeatHandler for Host<S> {
-    type KeyboardFocus = WlSurface;
+    type KeyboardFocus = Focus;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
@@ -1313,8 +1863,10 @@ impl<S: Shell + 'static> SeatHandler for Host<S> {
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        let client = focused.and_then(|s| self.display.get_client(s.id()).ok());
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Focus>) {
+        let client = focused
+            .and_then(|f| f.wl_surface())
+            .and_then(|s| self.display.get_client(s.id()).ok());
         set_data_device_focus(&self.display, seat, client);
     }
 }
@@ -1340,3 +1892,4 @@ delegate_shm!(@<S: Shell + 'static> Host<S>);
 delegate_seat!(@<S: Shell + 'static> Host<S>);
 delegate_data_device!(@<S: Shell + 'static> Host<S>);
 delegate_output!(@<S: Shell + 'static> Host<S>);
+delegate_xwayland_shell!(@<S: Shell + 'static> Host<S>);
