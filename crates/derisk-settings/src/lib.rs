@@ -350,7 +350,8 @@ impl App for SettingsApp {
                 }
                 if dirty {
                     ui.label(egui::RichText::new("Unsaved changes").color(theme.accent));
-                } else if let Some(status) = &self.status {
+                }
+                if let Some(status) = &self.status {
                     ui.label(status);
                 }
             });
