@@ -61,8 +61,8 @@ jobs:
           key: ${{ matrix.features }}
       - name: Clippy
         run: >-
-          cargo clippy --locked --all-targets
-          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+          cargo clippy --locked --workspace --all-targets
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
           -- -D warnings
 
   test:
@@ -71,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # "msrv" tracks rust-version in Cargo.toml.
+        # "msrv" tracks workspace.package.rust-version in the root Cargo.toml.
         toolchain: [stable, beta, msrv]
         features: [default, gpui]
     steps:
@@ -97,19 +97,19 @@ jobs:
           key: ${{ matrix.toolchain }}-${{ matrix.features }}
       - name: Build
         run: >-
-          cargo build --locked --all-targets
-          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+          cargo build --locked --workspace --all-targets
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
       - name: Test
         run: >-
-          cargo test --locked --all-targets
-          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+          cargo test --locked --workspace --all-targets
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
       - name: Doc tests
         run: >-
-          cargo test --locked --doc
-          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+          cargo test --locked --workspace --doc
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
       - name: Run headless example
         if: matrix.features == 'default'
-        run: cargo run --locked --example desktop
+        run: cargo run --locked -p mcsapi --example desktop
 
   docs:
     name: Docs
@@ -124,8 +124,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends $BASE_PACKAGES $GPUI_PACKAGES
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --locked --no-deps
-      - run: cargo doc --locked --no-deps --features gpui
+      - run: cargo doc --locked --workspace --no-deps
+      - run: cargo doc --locked --workspace --no-deps --features mcsapi/gpui
 
   coverage:
     name: Coverage
@@ -144,7 +144,7 @@ jobs:
           tool: cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
       - name: Collect coverage
-        run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --workspace --all-targets --lcov --output-path lcov.info
       - name: Summarize coverage
         run: |
           {
