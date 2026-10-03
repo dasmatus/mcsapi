@@ -1,0 +1,180 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+  schedule:
+    # Weekly run catches breakage from new toolchains and advisories.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # Packages Smithay needs for the default build.
+  BASE_PACKAGES: libxkbcommon-dev pkg-config
+  # Extra packages the native Wayland GPUI integration needs.
+  GPUI_PACKAGES: >-
+    libwayland-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev
+    libvulkan-dev
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [default, gpui]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $BASE_PACKAGES \
+            ${{ matrix.features == 'gpui' && '$GPUI_PACKAGES' || '' }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+      - name: Clippy
+        run: >-
+          cargo clippy --locked --all-targets
+          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+          -- -D warnings
+
+  test:
+    name: Test (${{ matrix.toolchain }}, ${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # "msrv" tracks rust-version in Cargo.toml.
+        toolchain: [stable, beta, msrv]
+        features: [default, gpui]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $BASE_PACKAGES \
+            ${{ matrix.features == 'gpui' && '$GPUI_PACKAGES' || '' }}
+      - name: Resolve toolchain
+        id: toolchain
+        run: |
+          if [ "${{ matrix.toolchain }}" = msrv ]; then
+            echo "name=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ matrix.toolchain }}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.name }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.toolchain }}-${{ matrix.features }}
+      - name: Build
+        run: >-
+          cargo build --locked --all-targets
+          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+      - name: Test
+        run: >-
+          cargo test --locked --all-targets
+          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+      - name: Doc tests
+        run: >-
+          cargo test --locked --doc
+          ${{ matrix.features == 'gpui' && '--features gpui' || '' }}
+      - name: Run headless example
+        if: matrix.features == 'default'
+        run: cargo run --locked --example desktop
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $BASE_PACKAGES $GPUI_PACKAGES
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --locked --no-deps
+      - run: cargo doc --locked --no-deps --features gpui
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $BASE_PACKAGES
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Collect coverage
+        run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
+      - name: Summarize coverage
+        run: |
+          {
+            echo '## Line coverage'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lcov
+          path: lcov.info
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  ci-success:
+    name: CI success
+    if: always()
+    needs: [fmt, clippy, test, docs, coverage, audit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required jobs
+        run: |
+          [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false ]
