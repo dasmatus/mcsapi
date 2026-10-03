@@ -1,0 +1,11 @@
+[package]
+name = "x2mcsapi"
+description = "Restyles foreign apps (web, Electron, GTK, Qt) to match an mcsapi desktop such as derisk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mcsapi-ui.workspace = true

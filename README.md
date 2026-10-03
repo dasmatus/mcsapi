@@ -20,6 +20,7 @@ member:
 | `derisk-editor` | `crates/derisk-editor` | Text Editor app. |
 | `derisk-monitor` | `crates/derisk-monitor` | System Monitor app. |
 | `derisk-calculator` | `crates/derisk-calculator` | Calculator app. |
+| `x2mcsapi` | `crates/x2mcsapi` | Adapter that restyles foreign apps (web pages and Electron via an injected script, GTK 3/4, Qt Widgets) from the shell `Theme`, so they look coherent with derisk. |
 
 Shared package metadata and dependency versions live in the root
 `Cargo.toml` under `[workspace.package]` and `[workspace.dependencies]`; a new
