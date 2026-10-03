@@ -122,6 +122,14 @@ need functioning drivers; a machine with no usable graphics backend needs a
 separately supplied software painter or a headless control path. The example
 intentionally clears texture deltas because it does not present a window.
 
+## TypeScript bindings
+
+[`bindings/node`](bindings/node) is a native Node.js addon (napi-rs) exposing
+`Desktop`, the layouts, and typed errors to TypeScript, with generated
+`index.d.ts` types. A TypeScript program can then drive workspace, focus, and
+layout policy while the compositor host applies the placements. See its README
+for build steps and usage.
+
 ## Development
 
 ```sh
