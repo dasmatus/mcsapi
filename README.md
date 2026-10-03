@@ -4,7 +4,25 @@ A small Rust scaffold for xmonad-like desktop policy on
 [Smithay](https://smithay.github.io/). It is a library, **not yet a runnable
 Wayland compositor**.
 
-## What is here
+## Workspace layout
+
+This repository is a Cargo workspace. Every directory under `crates/` is a
+member:
+
+| Crate | Path | Purpose |
+| --- | --- | --- |
+| `mcsapi` | `crates/mcsapi` | Desktop policy, layouts, toolkit selection, and shell widgets (the original library; public API unchanged). |
+| `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`. Starter. |
+| `mcsapi-runtime` | `crates/mcsapi-runtime` | Separate runtime for running apps: app registration and instance lifecycle. Starter. |
+
+Shared package metadata and dependency versions live in the root
+`Cargo.toml` under `[workspace.package]` and `[workspace.dependencies]`; a new
+crate inherits them with `version.workspace = true` and `dep.workspace = true`.
+
+`mcsapi-runtime` does not depend on the UI toolkit, so apps may use any
+toolkit and a compositor can use `mcsapi` without either starter crate.
+
+## What is here (`mcsapi`)
 
 - Distinct nonzero `WindowId` and `WorkspaceId` types.
 - Fixed workspaces, unique window membership, focus cycling, promotion to the
@@ -126,13 +144,16 @@ intentionally clears texture deltas because it does not present a window.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo run --example desktop
-cargo check --all-targets --features gpui
-cargo test --features gpui
-cargo doc --no-deps
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run -p mcsapi --example desktop
+cargo check --workspace --all-targets --features mcsapi/gpui
+cargo test --workspace --features mcsapi/gpui
+cargo doc --workspace --no-deps
 ```
+
+The root is a virtual manifest, so features are named per crate
+(`mcsapi/gpui`), or use `-p mcsapi --features gpui`.
 
 The example is headless: it prints placements and generates an egui workspace
 bar frame without requiring a GPU or display.

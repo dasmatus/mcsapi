@@ -3233,6 +3233,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcsapi-runtime"
+version = "0.1.0"
+
+[[package]]
+name = "mcsapi-ui"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "mcsapi",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

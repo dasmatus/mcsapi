@@ -1,0 +1,17 @@
+[package]
+name = "mcsapi"
+description = "Simple tiling desktop policy and toolkit selection for Smithay compositors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+egui.workspace = true
+gpui = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+smithay.workspace = true
+
+[features]
+gpui = ["dep:gpui", "dep:libc"]
