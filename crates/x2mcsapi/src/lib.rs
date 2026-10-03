@@ -1,14 +1,18 @@
 //! Restyles apps that are not built on `mcsapi-ui` so they look coherent with
 //! an mcsapi desktop such as derisk.
 //!
-//! Every output is generated from one [`Style`], whose colors are the shell's
-//! own [`Theme`], so a theme change reaches foreign apps without a second
-//! palette to keep in sync. Each target is plain text the foreign toolkit
-//! already understands:
+//! Every output is generated from one [`Style`], which is read from the
+//! current components rather than designed separately: colors, radii and
+//! strokes from `mcsapi-components`' [`Tokens`] (which derive from the shell
+//! [`Theme`]), control sizes measured by laying out those components, and font
+//! families from the egui setup they draw with. Changing a component or the
+//! theme changes every foreign app with it. Each target is plain text the
+//! foreign toolkit already understands:
 //!
 //! | Target | Function | How it is applied |
 //! | --- | --- | --- |
-//! | Web pages, Electron, webviews | [`inject_script`] | Evaluated in the page (preload, `executeJavaScript`, DevTools) |
+//! | Electron and Chromium apps | [`electron::spawn`] | Injected into every window and webview over the DevTools protocol |
+//! | Web pages, webviews | [`inject_script`] | Evaluated in the page (preload, `executeJavaScript`, DevTools) |
 //! | Browser userscript managers | [`userscript`] | Installed in Violentmonkey, Tampermonkey, Greasemonkey |
 //! | Any CSS host | [`web_css`] | Linked or injected as a stylesheet |
 //! | GTK 3 and GTK 4 | [`gtk_css`], [`gtk4_css`] | Theme directory selected with `GTK_THEME` |
@@ -24,162 +28,23 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 
+pub use mcsapi_components::Tokens;
 pub use mcsapi_ui::Theme;
-use mcsapi_ui::egui::Color32;
 
-/// Sizes the derisk shell uses, applied to foreign apps.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Metrics {
-    /// Corner radius of panels and menus, in pixels.
-    pub panel_radius: f32,
-    /// Corner radius of buttons, entries, and other controls, in pixels.
-    pub control_radius: f32,
-    /// Gap between neighboring controls, in pixels.
-    pub spacing: f32,
-    /// Body text size, in pixels.
-    pub font_size: f32,
-    /// Font families, most preferred first. Generic CSS families are allowed.
-    pub font_families: &'static [&'static str],
-}
+pub mod electron;
+mod style;
 
-impl Default for Metrics {
-    fn default() -> Self {
-        Self {
-            panel_radius: 12.0,
-            control_radius: 6.0,
-            spacing: 6.0,
-            font_size: 14.0,
-            // egui's default proportional font, which the shell draws with.
-            font_families: &["Ubuntu", "Inter", "Cantarell", "system-ui", "sans-serif"],
-        }
-    }
-}
+pub use style::{Fonts, Geometry, Palette, Rgba, Style};
 
-/// Everything needed to restyle a foreign app.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Style {
-    /// Shell colors; the single source of truth for every target.
-    pub theme: Theme,
-    /// Shell sizes.
-    pub metrics: Metrics,
-}
-
-impl Style {
-    /// Colors derived from [`Style::theme`], shared by every target.
-    pub fn palette(&self) -> Palette {
-        let t = self.theme;
-        Palette {
-            background: t.background.into(),
-            surface: t.surface.into(),
-            hover: mix(t.surface, t.foreground, 0.08).into(),
-            foreground: t.foreground.into(),
-            muted: mix(t.foreground, t.background, 0.35).into(),
-            border: t.border.into(),
-            accent: t.accent.into(),
-            // Text on the accent uses the darkest theme color for contrast.
-            on_accent: t.background.into(),
-            selection: Rgba::from(t.accent).with_alpha(0x55),
-        }
-    }
-}
-
-/// An sRGB color with alpha, formatted as `#rrggbb` or `#rrggbbaa`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Rgba {
-    /// Red.
-    pub r: u8,
-    /// Green.
-    pub g: u8,
-    /// Blue.
-    pub b: u8,
-    /// Alpha; 255 is opaque.
-    pub a: u8,
-}
-
-impl Rgba {
-    /// Returns this color with a different alpha.
-    pub fn with_alpha(self, a: u8) -> Self {
-        Self { a, ..self }
-    }
-
-    /// Formats as `rgba(r, g, b, a)`, which Qt and GTK 3 accept.
-    pub fn css_rgba(self) -> String {
-        format!(
-            "rgba({}, {}, {}, {})",
-            self.r,
-            self.g,
-            self.b,
-            f32::from(self.a) / 255.0
-        )
-    }
-}
-
-impl From<Color32> for Rgba {
-    fn from(c: Color32) -> Self {
-        let [r, g, b, a] = c.to_srgba_unmultiplied();
-        Self { r, g, b, a }
-    }
-}
-
-impl fmt::Display for Rgba {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{:02x}{:02x}{:02x}", self.r, self.g, self.b)?;
-        if self.a != 255 {
-            write!(f, "{:02x}", self.a)?;
-        }
-        Ok(())
-    }
-}
-
-/// Named colors every target maps onto its own vocabulary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Palette {
-    /// Window background.
-    pub background: Rgba,
-    /// Controls, cards, menus, and input fields.
-    pub surface: Rgba,
-    /// Hovered controls.
-    pub hover: Rgba,
-    /// Body text.
-    pub foreground: Rgba,
-    /// Secondary and disabled text.
-    pub muted: Rgba,
-    /// Control borders and separators.
-    pub border: Rgba,
-    /// Focus rings, links, checked and default controls.
-    pub accent: Rgba,
-    /// Text drawn on the accent.
-    pub on_accent: Rgba,
-    /// Text selection background.
-    pub selection: Rgba,
-}
-
-fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
-    let channel = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
-    Color32::from_rgb(
-        channel(a.r(), b.r()),
-        channel(a.g(), b.g()),
-        channel(a.b(), b.b()),
-    )
-}
-
-fn font_list(metrics: &Metrics) -> String {
-    let generic = [
-        "serif",
-        "sans-serif",
-        "monospace",
-        "system-ui",
-        "cursive",
-        "fantasy",
-    ];
-    metrics
-        .font_families
+fn font_list(families: &[String]) -> String {
+    let generic = ["serif", "sans-serif", "monospace", "system-ui"];
+    families
         .iter()
         .map(|family| {
-            if generic.contains(family) {
-                (*family).to_owned()
+            if generic.contains(&family.as_str()) {
+                family.clone()
             } else {
                 format!("\"{}\"", family.replace(['"', '\\'], ""))
             }
@@ -191,94 +56,184 @@ fn font_list(metrics: &Metrics) -> String {
 /// CSS for web content: custom properties plus rules for common elements.
 ///
 /// Pages that already use `--x2mcsapi-*` variables pick up the theme
-/// directly; other pages are restyled through element selectors. Rules use
-/// `!important` because they must win over the page's own stylesheet.
+/// directly; other pages are restyled through element selectors, which
+/// follow the components: ordinary buttons look like a secondary `Button`
+/// from `mcsapi-components`, submit buttons like a primary one, fields
+/// like an `Input`, and dialogs like a `Dialog`. Rules use `!important`
+/// because they must win over the page's own stylesheet.
 pub fn web_css(style: &Style) -> String {
     let p = style.palette();
-    let m = &style.metrics;
-    let font = font_list(m);
+    let g = &style.geometry;
+    let f = &style.fonts;
     let mut css = String::new();
     // Infallible: writing to a String cannot fail.
     let _ = write!(
         css,
         r#":root {{
   color-scheme: dark;
-  --x2mcsapi-background: {bg};
-  --x2mcsapi-surface: {surface};
-  --x2mcsapi-hover: {hover};
-  --x2mcsapi-foreground: {fg};
+  --x2mcsapi-background: {background};
+  --x2mcsapi-foreground: {foreground};
+  --x2mcsapi-card: {card};
   --x2mcsapi-muted: {muted};
+  --x2mcsapi-muted-foreground: {muted_foreground};
+  --x2mcsapi-primary: {primary};
+  --x2mcsapi-primary-foreground: {primary_foreground};
+  --x2mcsapi-secondary: {secondary};
+  --x2mcsapi-hover: {hover};
+  --x2mcsapi-destructive: {destructive};
+  --x2mcsapi-destructive-foreground: {destructive_foreground};
   --x2mcsapi-border: {border};
-  --x2mcsapi-accent: {accent};
-  --x2mcsapi-on-accent: {on_accent};
+  --x2mcsapi-ring: {ring};
+  --x2mcsapi-overlay: {overlay};
   --x2mcsapi-selection: {selection};
-  --x2mcsapi-panel-radius: {pr}px;
-  --x2mcsapi-control-radius: {cr}px;
-  --x2mcsapi-spacing: {sp}px;
+  --x2mcsapi-radius: {control_radius}px;
+  --x2mcsapi-card-radius: {card_radius}px;
+  --x2mcsapi-border-width: {border_width}px;
+  --x2mcsapi-ring-width: {ring_width}px;
+  --x2mcsapi-control-height: {control_height}px;
+  --x2mcsapi-control-padding-x: {control_padding_x}px;
+  --x2mcsapi-small-control-height: {small_control_height}px;
+  --x2mcsapi-small-padding-x: {small_padding_x}px;
+  --x2mcsapi-input-padding: {input_padding_y}px {input_padding_x}px;
+  --x2mcsapi-card-padding: {card_padding}px;
   --x2mcsapi-font: {font};
-  --x2mcsapi-font-size: {fs}px;
-  accent-color: var(--x2mcsapi-accent);
+  --x2mcsapi-font-weight: {weight};
+  --x2mcsapi-font-size: {body_size}px;
+  --x2mcsapi-small-font-size: {small_size}px;
+  --x2mcsapi-mono: {mono};
+  --x2mcsapi-mono-size: {mono_size}px;
+  accent-color: var(--x2mcsapi-primary);
   scrollbar-color: var(--x2mcsapi-border) var(--x2mcsapi-background);
 }}
 html, body {{
   background: var(--x2mcsapi-background) !important;
   color: var(--x2mcsapi-foreground) !important;
   font-family: var(--x2mcsapi-font) !important;
+  font-weight: var(--x2mcsapi-font-weight);
   font-size: var(--x2mcsapi-font-size);
+}}
+code, pre, kbd, samp {{
+  font-family: var(--x2mcsapi-mono) !important;
+  font-size: var(--x2mcsapi-mono-size);
+  background: var(--x2mcsapi-muted) !important;
+  border-radius: var(--x2mcsapi-radius);
+}}
+small {{
+  font-size: var(--x2mcsapi-small-font-size);
+  color: var(--x2mcsapi-muted-foreground) !important;
 }}
 ::selection {{
   background: var(--x2mcsapi-selection) !important;
   color: var(--x2mcsapi-foreground) !important;
 }}
 a, a:visited {{
-  color: var(--x2mcsapi-accent) !important;
+  color: var(--x2mcsapi-primary) !important;
 }}
-button, input, select, textarea, [role="button"] {{
-  background: var(--x2mcsapi-surface) !important;
+button, [role="button"], input[type="button"], input[type="reset"], select {{
+  background: var(--x2mcsapi-secondary) !important;
   color: var(--x2mcsapi-foreground) !important;
-  border: 1px solid var(--x2mcsapi-border) !important;
-  border-radius: var(--x2mcsapi-control-radius) !important;
-  font-family: var(--x2mcsapi-font) !important;
-  padding: 4px var(--x2mcsapi-spacing);
+  border: none !important;
+  border-radius: var(--x2mcsapi-radius) !important;
+  min-height: var(--x2mcsapi-control-height);
+  padding: 0 var(--x2mcsapi-control-padding-x);
+  font: inherit;
 }}
-button:hover, select:hover, [role="button"]:hover {{
+select {{
+  padding: 0 var(--x2mcsapi-small-padding-x);
+}}
+button:hover, [role="button"]:hover, input[type="button"]:hover, select:hover {{
   background: var(--x2mcsapi-hover) !important;
 }}
-button[type="submit"], .primary, [aria-pressed="true"] {{
-  background: var(--x2mcsapi-accent) !important;
-  color: var(--x2mcsapi-on-accent) !important;
-  border-color: var(--x2mcsapi-accent) !important;
+button[type="submit"], input[type="submit"], .primary, [aria-pressed="true"] {{
+  background: var(--x2mcsapi-primary) !important;
+  color: var(--x2mcsapi-primary-foreground) !important;
+  border: none !important;
+  border-radius: var(--x2mcsapi-radius) !important;
+  min-height: var(--x2mcsapi-control-height);
+  padding: 0 var(--x2mcsapi-control-padding-x);
 }}
-:focus-visible {{
-  outline: 2px solid var(--x2mcsapi-accent) !important;
-  outline-offset: 2px;
+button[type="submit"]:hover, input[type="submit"]:hover, .primary:hover {{
+  background: var(--x2mcsapi-primary) !important;
+  filter: brightness(0.9);
 }}
-input::placeholder, textarea::placeholder, :disabled {{
-  color: var(--x2mcsapi-muted) !important;
+.destructive, .danger, [data-variant="destructive"] {{
+  background: var(--x2mcsapi-destructive) !important;
+  color: var(--x2mcsapi-destructive-foreground) !important;
 }}
-dialog, [role="dialog"], [role="menu"], [role="listbox"] {{
-  background: var(--x2mcsapi-surface) !important;
+input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea {{
+  background: transparent !important;
   color: var(--x2mcsapi-foreground) !important;
-  border: 1px solid var(--x2mcsapi-border) !important;
-  border-radius: var(--x2mcsapi-panel-radius) !important;
+  border: var(--x2mcsapi-border-width) solid var(--x2mcsapi-border) !important;
+  border-radius: var(--x2mcsapi-radius) !important;
+  padding: var(--x2mcsapi-input-padding);
+  font: inherit;
+}}
+:focus-visible, input:focus, textarea:focus {{
+  outline: var(--x2mcsapi-ring-width) solid var(--x2mcsapi-ring) !important;
+  outline-offset: 0;
+}}
+input::placeholder, textarea::placeholder {{
+  color: var(--x2mcsapi-muted-foreground) !important;
+}}
+:disabled {{
+  opacity: 0.5;
+}}
+dialog, [role="dialog"], [role="alertdialog"] {{
+  background: var(--x2mcsapi-background) !important;
+  color: var(--x2mcsapi-foreground) !important;
+  border: var(--x2mcsapi-border-width) solid var(--x2mcsapi-border) !important;
+  border-radius: var(--x2mcsapi-card-radius) !important;
+  padding: var(--x2mcsapi-card-padding);
+}}
+dialog::backdrop {{
+  background: var(--x2mcsapi-overlay);
+}}
+[role="menu"], [role="listbox"], [role="tooltip"], details, fieldset {{
+  background: var(--x2mcsapi-card) !important;
+  color: var(--x2mcsapi-foreground) !important;
+  border: var(--x2mcsapi-border-width) solid var(--x2mcsapi-border) !important;
+  border-radius: var(--x2mcsapi-card-radius) !important;
 }}
 hr {{
+  border: none !important;
+  border-top: var(--x2mcsapi-border-width) solid var(--x2mcsapi-border) !important;
+}}
+table, th, td {{
   border-color: var(--x2mcsapi-border) !important;
 }}
 "#,
-        bg = p.background,
-        surface = p.surface,
-        hover = p.hover,
-        fg = p.foreground,
+        background = p.background,
+        foreground = p.foreground,
+        card = p.card,
         muted = p.muted,
+        muted_foreground = p.muted_foreground,
+        primary = p.primary,
+        primary_foreground = p.primary_foreground,
+        secondary = p.secondary,
+        hover = p.hover,
+        destructive = p.destructive,
+        destructive_foreground = p.destructive_foreground,
         border = p.border,
-        accent = p.accent,
-        on_accent = p.on_accent,
+        ring = p.ring,
+        overlay = p.overlay,
         selection = p.selection,
-        pr = m.panel_radius,
-        cr = m.control_radius,
-        sp = m.spacing,
-        fs = m.font_size,
+        control_radius = g.control_radius,
+        card_radius = g.card_radius,
+        border_width = g.border_width,
+        ring_width = g.ring_width,
+        control_height = g.control_height,
+        control_padding_x = g.control_padding_x,
+        small_control_height = g.small_control_height,
+        small_padding_x = g.small_padding_x,
+        input_padding_y = g.input_padding_y,
+        input_padding_x = g.input_padding_x,
+        card_padding = g.card_padding,
+        font = font_list(&f.proportional),
+        weight = f.weight,
+        body_size = f.body_size,
+        small_size = f.small_size,
+        mono = font_list(&f.monospace),
+        mono_size = f.monospace_size,
     );
     css
 }
@@ -385,41 +340,45 @@ pub fn userscript(style: &Style) -> String {
 /// the file is also installed as `~/.config/gtk-4.0/gtk.css`.
 pub fn gtk_css(style: &Style) -> String {
     let p = style.palette();
-    let m = &style.metrics;
-    let font = font_list(m);
-    let mut css = String::from("/* Generated by x2mcsapi from the mcsapi shell theme. */\n");
+    let g = &style.geometry;
+    let f = &style.fonts;
+    let mut css = String::from("/* Generated by x2mcsapi from mcsapi-components. */\n");
     let colors = [
         // GTK 3 theme names.
         ("theme_bg_color", p.background),
         ("theme_fg_color", p.foreground),
-        ("theme_base_color", p.surface),
+        ("theme_base_color", p.background),
         ("theme_text_color", p.foreground),
-        ("theme_selected_bg_color", p.accent),
-        ("theme_selected_fg_color", p.on_accent),
-        ("insensitive_fg_color", p.muted),
+        ("theme_selected_bg_color", p.primary),
+        ("theme_selected_fg_color", p.primary_foreground),
+        ("insensitive_fg_color", p.muted_foreground),
         ("borders", p.border),
         // libadwaita names.
         ("window_bg_color", p.background),
         ("window_fg_color", p.foreground),
-        ("view_bg_color", p.surface),
+        ("view_bg_color", p.background),
         ("view_fg_color", p.foreground),
         ("headerbar_bg_color", p.background),
         ("headerbar_fg_color", p.foreground),
-        ("card_bg_color", p.surface),
+        ("card_bg_color", p.card),
         ("card_fg_color", p.foreground),
-        ("popover_bg_color", p.surface),
+        ("popover_bg_color", p.card),
         ("popover_fg_color", p.foreground),
-        ("dialog_bg_color", p.surface),
+        ("dialog_bg_color", p.background),
         ("dialog_fg_color", p.foreground),
-        ("sidebar_bg_color", p.background),
+        ("sidebar_bg_color", p.card),
         ("sidebar_fg_color", p.foreground),
-        ("accent_color", p.accent),
-        ("accent_bg_color", p.accent),
-        ("accent_fg_color", p.on_accent),
+        ("accent_color", p.primary),
+        ("accent_bg_color", p.primary),
+        ("accent_fg_color", p.primary_foreground),
+        ("destructive_bg_color", p.destructive),
+        ("destructive_fg_color", p.destructive_foreground),
     ];
     for (name, color) in colors {
         let _ = writeln!(css, "@define-color {name} {};", color.css_rgba());
     }
+    // GTK min-height excludes padding and border.
+    let entry_height = (g.control_height - 2.0 * (g.input_padding_y + g.border_width)).max(0.0);
     let _ = write!(
         css,
         r#"
@@ -427,43 +386,60 @@ window, .background {{
   background-color: @theme_bg_color;
   color: @theme_fg_color;
   font-family: {font};
-  font-size: {fs}px;
+  font-weight: {weight};
+  font-size: {body_size}px;
 }}
 headerbar, .titlebar {{
   background: @theme_bg_color;
   color: @theme_fg_color;
-  border-bottom: 1px solid @borders;
+  border-bottom: {border_width}px solid @borders;
   box-shadow: none;
 }}
-button, entry, spinbutton, combobox button, dropdown > button {{
-  background: @theme_base_color;
+button, combobox button, dropdown > button {{
+  background: {secondary};
   color: @theme_fg_color;
-  border: 1px solid @borders;
-  border-radius: {cr}px;
+  border: none;
+  border-radius: {control_radius}px;
   box-shadow: none;
-  min-height: 24px;
-  padding: 4px {sp}px;
+  min-height: {control_height}px;
+  padding: 0 {control_padding_x}px;
 }}
 button:hover {{
   background: {hover};
 }}
-button:checked, button.suggested-action {{
+button.suggested-action, button:checked {{
   background: @accent_bg_color;
   color: @accent_fg_color;
-  border-color: @accent_bg_color;
+}}
+button.destructive-action {{
+  background: @destructive_bg_color;
+  color: @destructive_fg_color;
+}}
+entry, spinbutton {{
+  background: transparent;
+  color: @theme_fg_color;
+  border: {border_width}px solid @borders;
+  border-radius: {control_radius}px;
+  box-shadow: none;
+  min-height: {entry_height}px;
+  padding: {input_padding_y}px {input_padding_x}px;
 }}
 button:disabled, entry:disabled, label:disabled {{
-  color: @insensitive_fg_color;
+  opacity: 0.5;
 }}
 entry:focus, button:focus {{
-  outline: 2px solid @accent_color;
-  outline-offset: 1px;
+  outline: {ring_width}px solid {ring};
+  outline-offset: 0;
 }}
-popover > contents, menu, .menu, .popup, tooltip {{
-  background: @popover_bg_color;
-  color: @popover_fg_color;
-  border: 1px solid @borders;
-  border-radius: {pr}px;
+popover > contents, menu, .menu, .popup, tooltip, .card, frame > border {{
+  background: @card_bg_color;
+  color: @card_fg_color;
+  border: {border_width}px solid @borders;
+  border-radius: {card_radius}px;
+}}
+dialog, messagedialog {{
+  background: @dialog_bg_color;
+  border-radius: {card_radius}px;
 }}
 selection, *:selected, row:selected {{
   background-color: {selection};
@@ -471,14 +447,29 @@ selection, *:selected, row:selected {{
 }}
 separator {{
   background: @borders;
+  min-width: {border_width}px;
+  min-height: {border_width}px;
+}}
+textview, .monospace {{
+  font-family: {mono};
 }}
 "#,
-        fs = m.font_size,
-        cr = m.control_radius,
-        pr = m.panel_radius,
-        sp = m.spacing,
+        font = font_list(&f.proportional),
+        weight = f.weight,
+        body_size = f.body_size,
+        mono = font_list(&f.monospace),
+        secondary = p.secondary.css_rgba(),
         hover = p.hover.css_rgba(),
+        ring = p.ring.css_rgba(),
         selection = p.selection.css_rgba(),
+        border_width = g.border_width,
+        ring_width = g.ring_width,
+        control_radius = g.control_radius,
+        card_radius = g.card_radius,
+        control_height = g.control_height,
+        control_padding_x = g.control_padding_x,
+        input_padding_x = g.input_padding_x,
+        input_padding_y = g.input_padding_y,
     );
     css
 }
@@ -487,8 +478,11 @@ separator {{
 /// text child holds the focus. GTK 3 rejects these selectors.
 pub fn gtk4_css(style: &Style) -> String {
     let mut css = gtk_css(style);
-    css.push_str(
-        "entry:focus-within {\n  outline: 2px solid @accent_color;\n  outline-offset: 1px;\n}\n",
+    let _ = write!(
+        css,
+        "entry:focus-within {{\n  outline: {w}px solid {ring};\n  outline-offset: 0;\n}}\n",
+        w = style.geometry.ring_width,
+        ring = style.palette().ring.css_rgba(),
     );
     css
 }
@@ -499,88 +493,126 @@ pub fn gtk4_css(style: &Style) -> String {
 /// Qt Quick apps do not read QSS.
 pub fn qt_stylesheet(style: &Style) -> String {
     let p = style.palette();
-    let m = &style.metrics;
-    let font = font_list(m);
+    let g = &style.geometry;
+    let f = &style.fonts;
+    // QSS takes a single family.
+    let first = |families: &[String]| families.first().cloned().unwrap_or_default();
+    // Qt's min-height excludes padding and border.
+    let entry_height = (g.control_height - 2.0 * (g.input_padding_y + g.border_width)).max(0.0);
     format!(
-        r#"/* Generated by x2mcsapi from the mcsapi shell theme. */
+        r#"/* Generated by x2mcsapi from mcsapi-components. */
 QWidget {{
-  background-color: {bg};
-  color: {fg};
-  font-family: {font};
-  font-size: {fs}px;
-  selection-background-color: {accent};
-  selection-color: {on_accent};
+  background-color: {background};
+  color: {foreground};
+  font-family: "{font}";
+  font-weight: {weight};
+  font-size: {body_size}px;
+  selection-background-color: {primary};
+  selection-color: {primary_foreground};
 }}
-QPushButton, QToolButton, QComboBox, QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
-  background-color: {surface};
-  border: 1px solid {border};
-  border-radius: {cr}px;
-  padding: 4px {sp}px;
+QPlainTextEdit, QTextEdit[readOnly="true"] {{
+  font-family: "{mono}";
+}}
+QPushButton, QToolButton, QComboBox {{
+  background-color: {secondary};
+  border: none;
+  border-radius: {control_radius}px;
+  min-height: {control_height}px;
+  padding: 0 {control_padding_x}px;
 }}
 QPushButton:hover, QToolButton:hover, QComboBox:hover {{
   background-color: {hover};
 }}
 QPushButton:default, QPushButton:checked, QToolButton:checked {{
-  background-color: {accent};
-  color: {on_accent};
-  border-color: {accent};
+  background-color: {primary};
+  color: {primary_foreground};
 }}
-QPushButton:focus, QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QPlainTextEdit:focus {{
-  border: 1px solid {accent};
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
+  background-color: transparent;
+  border: {border_width}px solid {border};
+  border-radius: {control_radius}px;
+  padding: {input_padding_y}px {input_padding_x}px;
+}}
+QLineEdit, QSpinBox, QDoubleSpinBox {{
+  min-height: {entry_height}px;
+}}
+QPushButton:focus, QToolButton:focus, QComboBox:focus, QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+  border: {ring_width}px solid {ring};
 }}
 QWidget:disabled {{
-  color: {muted};
+  color: {muted_foreground};
 }}
 QMenuBar, QStatusBar, QToolBar {{
-  background-color: {bg};
+  background-color: {background};
   border: none;
 }}
-QMenu, QToolTip, QAbstractItemView {{
-  background-color: {surface};
-  border: 1px solid {border};
+QMenu, QToolTip, QAbstractItemView, QGroupBox {{
+  background-color: {card};
+  border: {border_width}px solid {border};
+  border-radius: {card_radius}px;
 }}
 QMenu {{
-  border-radius: {pr}px;
-  padding: 4px;
+  padding: {input_padding_y}px;
+}}
+QMenu::item {{
+  padding: {input_padding_y}px {input_padding_x}px;
+  border-radius: {control_radius}px;
 }}
 QMenu::item:selected, QAbstractItemView::item:selected, QMenuBar::item:selected {{
-  background-color: {accent};
-  color: {on_accent};
+  background-color: {hover};
+  color: {foreground};
+}}
+QDialog {{
+  background-color: {background};
 }}
 QTabBar::tab {{
-  background-color: {bg};
-  border: 1px solid {border};
-  padding: 4px {pad}px;
+  background-color: {muted};
+  color: {muted_foreground};
+  border: none;
+  padding: 0 {small_padding_x}px;
+  min-height: {small_control_height}px;
 }}
 QTabBar::tab:selected {{
-  background-color: {surface};
-  border-color: {accent};
+  background-color: {background};
+  color: {foreground};
 }}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
-  background-color: {accent};
-  border: 1px solid {accent};
+  background-color: {primary};
+  border: {border_width}px solid {primary};
 }}
 QScrollBar {{
-  background-color: {bg};
+  background-color: {background};
 }}
 QScrollBar::handle {{
   background-color: {border};
-  border-radius: {cr}px;
+  border-radius: {control_radius}px;
 }}
 "#,
-        bg = p.background.css_rgba(),
-        surface = p.surface.css_rgba(),
-        hover = p.hover.css_rgba(),
-        fg = p.foreground.css_rgba(),
+        background = p.background.css_rgba(),
+        foreground = p.foreground.css_rgba(),
+        card = p.card.css_rgba(),
         muted = p.muted.css_rgba(),
+        muted_foreground = p.muted_foreground.css_rgba(),
+        primary = p.primary.css_rgba(),
+        primary_foreground = p.primary_foreground.css_rgba(),
+        secondary = p.secondary.css_rgba(),
+        hover = p.hover.css_rgba(),
         border = p.border.css_rgba(),
-        accent = p.accent.css_rgba(),
-        on_accent = p.on_accent.css_rgba(),
-        fs = m.font_size,
-        cr = m.control_radius,
-        pr = m.panel_radius,
-        sp = m.spacing,
-        pad = m.spacing * 2.0,
+        ring = p.ring.css_rgba(),
+        font = first(&f.proportional),
+        mono = first(&f.monospace),
+        weight = f.weight,
+        body_size = f.body_size,
+        border_width = g.border_width,
+        ring_width = g.ring_width,
+        control_radius = g.control_radius,
+        card_radius = g.card_radius,
+        control_height = g.control_height,
+        control_padding_x = g.control_padding_x,
+        small_control_height = g.small_control_height,
+        small_padding_x = g.small_padding_x,
+        input_padding_x = g.input_padding_x,
+        input_padding_y = g.input_padding_y,
     )
 }
 
