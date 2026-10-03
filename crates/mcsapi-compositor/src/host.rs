@@ -4,6 +4,9 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
+    fs::File,
+    io::Write,
+    os::fd::OwnedFd,
     process::{Child, Command as Process},
     sync::Arc,
     time::{Duration, Instant},
@@ -65,7 +68,7 @@ use smithay::{
             SelectionHandler,
             data_device::{
                 ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-                set_data_device_focus,
+                set_data_device_focus, set_data_device_selection,
             },
         },
         shell::xdg::{
@@ -129,7 +132,7 @@ enum Content {
 enum Route {
     Chrome,
     Shell,
-    Content,
+    Content(Option<WindowId>),
 }
 
 /// Compositor state, generic over the desktop shell.
@@ -167,6 +170,7 @@ pub(crate) struct Host<S: Shell> {
     pointer: Point<f64, Logical>,
     route: Option<Route>,
     buttons: u32,
+    pointer_target: Option<WindowId>,
     egui_mods: egui::Modifiers,
     /// Keys whose press the shell consumed; their release is consumed too.
     consumed_keys: HashSet<u32>,
@@ -288,6 +292,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         pointer: (0.0, 0.0).into(),
         route: None,
         buttons: 0,
+        pointer_target: None,
         egui_mods: egui::Modifiers::default(),
         consumed_keys: HashSet::new(),
         children: Vec::new(),
@@ -317,6 +322,13 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
             TimeoutAction::Drop
         },
     )?;
+    event_loop.handle().insert_source(
+        Timer::from_duration(Duration::from_secs(1)),
+        |_, _, host| {
+            host.reap_children();
+            TimeoutAction::ToDuration(Duration::from_secs(1))
+        },
+    )?;
     event_loop
         .handle()
         .insert_source(Timer::immediate(), |_, _, host| {
@@ -324,14 +336,16 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
             TimeoutAction::ToDuration(Duration::from_millis(16))
         })?;
 
-    event_loop.run(None, &mut host, |host| {
+    let run_result = event_loop.run(None, &mut host, |host| {
         host.space.refresh();
         host.popups.cleanup();
         let _ = host.display.flush_clients();
-    })?;
+    });
     for child in &mut host.children {
         let _ = child.kill();
+        let _ = child.wait();
     }
+    run_result?;
     Ok(())
 }
 
@@ -403,6 +417,11 @@ impl<S: Shell> Host<S> {
             Ok(child) => self.children.push(child),
             Err(e) => eprintln!("mcsapi-compositor: cannot launch {name}: {e}"),
         }
+    }
+
+    fn reap_children(&mut self) {
+        self.children
+            .retain_mut(|child| child.try_wait().map_or(true, |status| status.is_none()));
     }
 
     fn close(&mut self, window: WindowId) {
@@ -638,29 +657,31 @@ impl<S: Shell> Host<S> {
         let route = self.route.unwrap_or(if self.chrome_wants_pointer() {
             Route::Chrome
         } else {
-            Route::Content
+            Route::Content(None)
         });
         if route == Route::Shell {
             self.shell.pointer_motion(self.point());
         }
         let mut focus = None;
-        if route == Route::Content {
-            let under = self.content_under();
-            for (id, content) in &mut self.windows {
-                if let Content::Internal { events, .. } = content {
-                    events.push(if Some(*id) == under {
-                        egui::Event::PointerMoved(pos)
-                    } else {
-                        egui::Event::PointerGone
-                    });
-                }
+        let target = match self.route {
+            Some(Route::Content(target)) => target,
+            None if route == Route::Content(None) => self.content_under(),
+            _ => None,
+        };
+        let target = target.filter(|id| {
+            self.shell.placements().iter().any(|p| p.window == *id)
+                && matches!(self.windows.get(id), Some(Content::Internal { .. }))
+        });
+        if self.pointer_target != target {
+            if let Some(events) = self.internal_events(self.pointer_target) {
+                events.push(egui::Event::PointerGone);
             }
-            if !matches!(
-                under.and_then(|w| self.windows.get(&w)),
-                Some(Content::Internal { .. })
-            ) {
-                focus = self.surface_under();
-            }
+            self.pointer_target = target;
+        }
+        if let Some(events) = self.internal_events(target) {
+            events.push(egui::Event::PointerMoved(pos));
+        } else if route == Route::Content(None) {
+            focus = self.surface_under();
         }
         if let Some(pointer) = self.seat.get_pointer() {
             pointer.motion(
@@ -695,13 +716,13 @@ impl<S: Shell> Host<S> {
             } else if button == BTN_LEFT {
                 match self.shell.pointer_down(self.point(), u64::from(time)) {
                     Press::Handled => Route::Shell,
-                    Press::Client => Route::Content,
+                    Press::Client => Route::Content(self.content_under()),
                 }
             } else {
                 if let Some(window) = self.content_under() {
                     self.shell.focus(window);
                 }
-                Route::Content
+                Route::Content(self.content_under())
             });
         }
         let pointer_event = egui_button.map(|button| egui::Event::PointerButton {
@@ -710,15 +731,19 @@ impl<S: Shell> Host<S> {
             pressed,
             modifiers: self.egui_mods,
         });
-        match self.route.unwrap_or(Route::Content) {
+        match self.route.unwrap_or(Route::Content(None)) {
             Route::Chrome => self.chrome_events.extend(pointer_event),
             Route::Shell => {
-                if !pressed {
+                if !pressed && self.buttons == 0 {
                     self.shell.pointer_up();
                 }
             }
-            Route::Content => {
-                let under = self.content_under();
+            Route::Content(target) => {
+                let under = if self.route.is_some() {
+                    target
+                } else {
+                    self.content_under()
+                };
                 if let Some(events) = self.internal_events(under) {
                     events.extend(pointer_event);
                 } else if let Some(pointer) = self.seat.get_pointer() {
@@ -749,9 +774,7 @@ impl<S: Shell> Host<S> {
         pressed: bool,
         keycode: u32,
     ) -> FilterResult<()> {
-        if !pressed && self.consumed_keys.remove(&keycode) {
-            return FilterResult::Intercept(());
-        }
+        let consumed_release = !pressed && self.consumed_keys.remove(&keycode);
         self.egui_mods = egui::Modifiers {
             alt: modifiers.alt,
             ctrl: modifiers.ctrl,
@@ -777,7 +800,7 @@ impl<S: Shell> Host<S> {
                 alt: modifiers.alt,
             },
         };
-        let route = match self.shell.key(&key) {
+        let route = match shell_key_route(&mut self.shell, &key, consumed_release) {
             KeyRoute::Client if self.chrome.ctx.egui_wants_keyboard_input() => KeyRoute::Chrome,
             route => route,
         };
@@ -925,6 +948,20 @@ impl<S: Shell> Host<S> {
             ..Default::default()
         };
         let mut output = mcsapi_ui::run_frame(app, &egui.ctx, input, &theme);
+        for command in output.platform_output.commands {
+            if let egui::OutputCommand::CopyText(text) = command {
+                set_data_device_selection(
+                    &self.display,
+                    &self.seat,
+                    vec![
+                        "text/plain;charset=utf-8".into(),
+                        "text/plain".into(),
+                        "UTF8_STRING".into(),
+                    ],
+                    text,
+                );
+            }
+        }
         // Fill the whole content area, not only what the app laid out.
         let area = egui::Rect::from_min_size(
             egui::pos2(g.loc.x as f32, g.loc.y as f32),
@@ -1091,6 +1128,15 @@ impl<S: Shell> Host<S> {
     }
 }
 
+fn shell_key_route(shell: &mut impl Shell, key: &KeyInput, consumed_release: bool) -> KeyRoute {
+    let route = shell.key(key);
+    if consumed_release {
+        KeyRoute::Consume
+    } else {
+        route
+    }
+}
+
 /// Draws the pointer above everything (the nested window hides the host's).
 fn paint_cursor(ctx: &egui::Context, at: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(
@@ -1223,6 +1269,9 @@ impl<S: Shell + 'static> XdgShellHandler for Host<S> {
             self.shell.unmap_window(id);
             if self.keyboard_focus == Some(id) {
                 self.keyboard_focus = None;
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+                }
             }
         }
     }
@@ -1320,12 +1369,89 @@ impl<S: Shell + 'static> SeatHandler for Host<S> {
 }
 
 impl<S: Shell + 'static> SelectionHandler for Host<S> {
-    type SelectionUserData = ();
+    type SelectionUserData = String;
+
+    fn send_selection(
+        &mut self,
+        _ty: smithay::wayland::selection::SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        user_data: &Self::SelectionUserData,
+    ) {
+        if matches!(
+            mime_type.as_str(),
+            "text/plain" | "text/plain;charset=utf-8" | "UTF8_STRING"
+        ) {
+            let text = user_data.clone();
+            std::thread::spawn(move || {
+                let mut file = File::from(fd);
+                let _ = file.write_all(text.as_bytes());
+            });
+        }
+    }
 }
 
 impl<S: Shell + 'static> DataDeviceHandler for Host<S> {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestShell {
+        keys: Vec<bool>,
+    }
+
+    impl Shell for TestShell {
+        fn map_window(&mut self, _app_id: &str, _title: &str) -> WindowId {
+            WindowId::new(1).unwrap()
+        }
+
+        fn unmap_window(&mut self, _window: WindowId) {}
+
+        fn set_output(&mut self, _size: (i32, i32)) {}
+
+        fn focused(&self) -> Option<WindowId> {
+            None
+        }
+
+        fn placements(&self) -> Vec<Placement> {
+            Vec::new()
+        }
+
+        fn key(&mut self, key: &KeyInput) -> KeyRoute {
+            self.keys.push(key.pressed);
+            if key.pressed {
+                KeyRoute::Consume
+            } else {
+                KeyRoute::Client
+            }
+        }
+    }
+
+    #[test]
+    fn consumed_key_release_reaches_shell_but_not_client() {
+        let mut shell = TestShell { keys: Vec::new() };
+        let key = |pressed| KeyInput {
+            sym: Keysym::Escape,
+            text: None,
+            pressed,
+            mods: Modifiers::default(),
+        };
+
+        assert_eq!(
+            shell_key_route(&mut shell, &key(true), false),
+            KeyRoute::Consume
+        );
+        assert_eq!(
+            shell_key_route(&mut shell, &key(false), true),
+            KeyRoute::Consume
+        );
+        assert_eq!(shell.keys, [true, false]);
     }
 }
 
