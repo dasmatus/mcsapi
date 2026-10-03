@@ -41,7 +41,6 @@ pub enum FallbackReason {
 /// initialize within GPUI's application context rather than nesting event loops.
 pub enum Toolkit<G> {
     /// A successfully initialized GPUI window/view.
-    #[cfg(feature = "gpui")]
     Gpui(G),
     /// An egui context plus an explicit explanation of the fallback.
     Egui {
@@ -49,15 +48,12 @@ pub enum Toolkit<G> {
         context: egui::Context,
         /// Why the accelerated toolkit was not selected.
         reason: FallbackReason,
-        /// Tracks the host handle type when GPUI is not compiled.
-        handle_type: std::marker::PhantomData<G>,
     },
 }
 
 impl<G> fmt::Debug for Toolkit<G> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            #[cfg(feature = "gpui")]
             Self::Gpui(_) => f.debug_tuple("Gpui").finish_non_exhaustive(),
             Self::Egui { reason, .. } => f
                 .debug_struct("Egui")
@@ -84,24 +80,14 @@ impl<G> Toolkit<G> {
         } else if !capabilities.gpui_drivers {
             FallbackReason::MissingDrivers
         } else {
-            #[cfg(feature = "gpui")]
-            {
-                match initialize_gpui() {
-                    Ok(handle) => return Self::Gpui(handle),
-                    Err(error) => FallbackReason::InitializationFailed(error.to_string()),
-                }
-            }
-            #[cfg(not(feature = "gpui"))]
-            {
-                unreachable!("GPUI eligibility was checked above")
+            match initialize_gpui() {
+                Ok(handle) => return Self::Gpui(handle),
+                Err(error) => FallbackReason::InitializationFailed(error.to_string()),
             }
         };
-        #[cfg(not(feature = "gpui"))]
-        let _ = initialize_gpui;
         Self::Egui {
             context: egui::Context::default(),
             reason,
-            handle_type: std::marker::PhantomData,
         }
     }
 }

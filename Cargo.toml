@@ -10,7 +10,9 @@ repository = "https://github.com/dasmatus/mcsapi"
 [dependencies]
 egui = "0.36.2"
 gpui = { version = "0.2.2", default-features = false, features = ["wayland"], optional = true }
+# GPUI 0.2.2 pulls xattr 0.2.3, which needs libc's removed Linux ENOATTR alias.
+libc = { version = "=0.2.186", optional = true }
 smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend"] }
 
 [features]
-gpui = ["dep:gpui"]
+gpui = ["dep:gpui", "dep:libc"]

@@ -1,3 +1,5 @@
+use std::iter::FusedIterator;
+
 use crate::{Error, Geometry, WindowId};
 
 /// A window and its proposed logical geometry.
@@ -24,16 +26,16 @@ pub enum Layout {
 }
 
 impl Layout {
-    /// Writes placements without allocating once the buffer has enough capacity.
+    /// Returns lazy placements with no intermediate collection or allocation.
     ///
-    /// Invalid bounds or sub-pixel tiles return an error without modifying the
-    /// buffer. Coordinates and edges must fit in `i32`, including negative origins.
-    pub fn arrange(
-        self,
-        bounds: Geometry,
-        windows: &[WindowId],
-        placements: &mut Vec<Placement>,
-    ) -> Result<(), Error> {
+    /// Bounds must be positive, edges must fit in `i32`, and every tile must
+    /// receive at least one logical pixel. Validation precedes iteration.
+    pub fn arrange<I>(self, bounds: Geometry, windows: I) -> Result<Placements<I::IntoIter>, Error>
+    where
+        I: IntoIterator<Item = WindowId>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let windows = windows.into_iter();
         let (width, height) = (bounds.size.w, bounds.size.h);
         if width <= 0
             || height <= 0
@@ -42,43 +44,68 @@ impl Layout {
         {
             return Err(Error::InvalidGeometry);
         }
-        let stack_count = windows.len().saturating_sub(1);
-        if self == Self::Tall
-            && stack_count > 0
-            && (width < 2 || stack_count > height as usize)
-        {
+        let count = windows.len();
+        if self == Self::Tall && count > 1 && (width < 2 || count - 1 > height as usize) {
             return Err(Error::InsufficientSpace);
         }
-        placements.clear();
-        placements.reserve(windows.len());
-        if self == Self::Monocle || windows.len() <= 1 {
-            placements.extend(windows.iter().map(|&window| Placement {
-                window,
-                geometry: bounds,
-            }));
-            return Ok(());
-        }
-
-        let main_width = width / 2;
-        placements.push(Placement {
-            window: windows[0],
-            geometry: Geometry::from_loc_and_size(bounds.loc, (main_width, height)),
-        });
-        let count = stack_count as i32;
-        let tile_height = height / count;
-        let remainder = height % count;
-        let mut y = bounds.loc.y;
-        for (index, &window) in windows[1..].iter().enumerate() {
-            let h = tile_height + i32::from((index as i32) < remainder);
-            placements.push(Placement {
-                window,
-                geometry: Geometry::from_loc_and_size(
-                    (bounds.loc.x + main_width, y),
-                    (width - main_width, h),
-                ),
-            });
-            y += h;
-        }
-        Ok(())
+        Ok(Placements {
+            windows,
+            layout: self,
+            bounds,
+            count,
+            index: 0,
+        })
     }
 }
+
+/// An allocation-free iterator over validated logical window placements.
+#[derive(Clone, Debug)]
+pub struct Placements<I> {
+    windows: I,
+    layout: Layout,
+    bounds: Geometry,
+    count: usize,
+    index: usize,
+}
+
+impl<I: ExactSizeIterator<Item = WindowId>> Iterator for Placements<I> {
+    type Item = Placement;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let window = self.windows.next()?;
+        let geometry = if self.layout == Layout::Monocle || self.count <= 1 {
+            self.bounds
+        } else {
+            let main_width = self.bounds.size.w / 2;
+            if self.index == 0 {
+                Geometry::new(self.bounds.loc, (main_width, self.bounds.size.h).into())
+            } else {
+                let count = (self.count - 1) as i32;
+                let index = (self.index - 1) as i32;
+                let height = self.bounds.size.h / count;
+                let remainder = self.bounds.size.h % count;
+                Geometry::new(
+                    (
+                        self.bounds.loc.x + main_width,
+                        self.bounds.loc.y + index * height + index.min(remainder),
+                    )
+                        .into(),
+                    (
+                        self.bounds.size.w - main_width,
+                        height + i32::from(index < remainder),
+                    )
+                        .into(),
+                )
+            }
+        };
+        self.index += 1;
+        Some(Placement { window, geometry })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.windows.size_hint()
+    }
+}
+
+impl<I: ExactSizeIterator<Item = WindowId>> ExactSizeIterator for Placements<I> {}
+impl<I: ExactSizeIterator<Item = WindowId> + FusedIterator> FusedIterator for Placements<I> {}

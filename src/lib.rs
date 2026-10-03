@@ -8,11 +8,9 @@
 //!
 //! let workspace = WorkspaceId::new(1).unwrap();
 //! let mut desktop = Desktop::new([workspace])?;
-//! desktop.active_mut().insert(WindowId::new(1).unwrap())?;
-//! let mut placements = Vec::new();
-//! desktop.active().arrange(
-//!     Geometry::from_loc_and_size((0, 0), (1920, 1080)),
-//!     &mut placements,
+//! desktop.insert(WindowId::new(1).unwrap())?;
+//! let placements = desktop.active().arrange(
+//!     Geometry::new((0, 0).into(), (1920, 1080).into()),
 //! )?;
 //! assert_eq!(placements.len(), 1);
 //! # Ok::<(), mcsapi::Error>(())
@@ -24,9 +22,10 @@
 mod desktop;
 mod layout;
 pub mod toolkit;
+pub mod widgets;
 
-pub use desktop::{Desktop, WindowId, Workspace, WorkspaceId};
-pub use layout::{Layout, Placement};
+pub use desktop::{Desktop, WindowId, Windows, Workspace, WorkspaceId};
+pub use layout::{Layout, Placement, Placements};
 pub use smithay;
 pub use smithay::utils::{Logical, Rectangle};
 
