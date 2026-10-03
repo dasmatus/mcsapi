@@ -1,18 +1,21 @@
-[package]
-name = "mcsapi"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Simple tiling desktop policy and toolkit selection for Smithay compositors"
 license = "GPL-3.0-only"
 repository = "https://github.com/dasmatus/mcsapi"
 
-[dependencies]
+[workspace.dependencies]
+mcsapi = { path = "crates/mcsapi", version = "0.1.0" }
+mcsapi-ui = { path = "crates/mcsapi-ui", version = "0.1.0" }
+mcsapi-runtime = { path = "crates/mcsapi-runtime", version = "0.1.0" }
 egui = "0.36.2"
-gpui = { version = "0.2.2", default-features = false, features = ["wayland"], optional = true }
+gpui = { version = "0.2.2", default-features = false, features = ["wayland"] }
 # GPUI 0.2.2 pulls xattr 0.2.3, which needs libc's removed Linux ENOATTR alias.
-libc = { version = "=0.2.186", optional = true }
+libc = "=0.2.186"
 smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend"] }
 
-[features]
-gpui = ["dep:gpui", "dep:libc"]
