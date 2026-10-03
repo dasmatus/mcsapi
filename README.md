@@ -15,6 +15,7 @@ member:
 | `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`. Starter. |
 | `mcsapi-runtime` | `crates/mcsapi-runtime` | Separate runtime for running apps: app registration and instance lifecycle. Starter. |
 | `x2mcsapi` | `crates/x2mcsapi` | Adapter that restyles foreign apps (web pages and Electron via an injected script, GTK 3/4, Qt Widgets) from the shell `Theme`, so they look coherent with derisk. |
+| `mcsapi-mcp` | `crates/mcsapi-mcp` | Stateless MCP server exposing desktop policy as `simulate` and `arrange` tools over Streamable HTTP. |
 
 Shared package metadata and dependency versions live in the root
 `Cargo.toml` under `[workspace.package]` and `[workspace.dependencies]`; a new
@@ -149,6 +150,30 @@ intentionally clears texture deltas because it does not present a window.
 layout policy while the compositor host applies the placements. See its README
 for build steps and usage.
 
+## MCP server
+
+`crates/mcsapi-mcp` serves mcsapi's policy to AI coding agents (Claude Code,
+GitHub Copilot, or any MCP client) over Streamable HTTP:
+
+```sh
+cargo run -p mcsapi-mcp   # http://127.0.0.1:8787/mcp; set MCSAPI_MCP_ADDR to change
+```
+
+It is stateless: no `Mcp-Session-Id` is issued, nothing is stored between
+requests, and `tools/list` or `tools/call` work without a prior `initialize`.
+Each call carries everything it needs.
+
+- `simulate` takes workspace IDs, an ordered list of operations (`insert`,
+  `remove`, `focus`, `focus_next`, `focus_previous`, `promote_focused`,
+  `switch_to`, `move_window`, `set_layout`), and optional output bounds. It
+  replays them on a fresh `Desktop` and returns each workspace's windows in
+  tiling order, focus, layout, the active workspace, and the placements. A
+  failing operation is reported by index with the library's error text.
+- `arrange` lays out windows already in tiling order with `tall` or `monocle`.
+
+`.mcp.json` (Claude Code) and `.vscode/mcp.json` (VS Code and Copilot) point at
+the default address, so start the server and the tools appear in either.
+
 ## Development
 
 ```sh
@@ -160,6 +185,13 @@ cargo check --workspace --all-targets --features mcsapi/gpui
 cargo test --workspace --features mcsapi/gpui
 cargo doc --workspace --no-deps
 ```
+
+For hot reload, install [bacon](https://dystroy.org/bacon/) once with
+`cargo install --locked bacon`, then run `bacon` at the root. It reruns the
+current job whenever a workspace crate changes. Jobs from `bacon.toml`:
+`check` (default), `clippy` (`c`), `test` (`t`), `doc` (`d`), `example` (`e`),
+and `mcp` (`m`), which rebuilds and restarts the MCP server on every save. Start
+on one directly with `bacon test` or `bacon mcp`.
 
 The root is a virtual manifest, so features are named per crate
 (`mcsapi/gpui`), or use `-p mcsapi --features gpui`.

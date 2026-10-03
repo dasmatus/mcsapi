@@ -1,0 +1,51 @@
+# Hot reload for development: `cargo install --locked bacon`, then `bacon`.
+# Each job reruns when any workspace crate changes. Press the key shown
+# in brackets to switch jobs; `bacon <job>` starts on one directly.
+# Full reference: https://dystroy.org/bacon/config/
+
+default_job = "check"
+env.CARGO_TERM_COLOR = "always"
+
+# Default job. Fast type check of every crate and target.
+[jobs.check]
+command = ["cargo", "check", "--workspace", "--all-targets"]
+need_stdout = false
+
+# [c] The same lints CI enforces.
+[jobs.clippy]
+command = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+need_stdout = false
+
+# [t] All workspace tests. Narrow with `bacon test -- -p mcsapi`.
+[jobs.test]
+command = ["cargo", "test", "--workspace"]
+need_stdout = true
+
+# [d] Rustdoc with warnings as errors, as in CI.
+[jobs.doc]
+command = ["cargo", "doc", "--workspace", "--no-deps"]
+env.RUSTDOCFLAGS = "-D warnings"
+need_stdout = false
+
+# [e] The headless desktop example: prints placements, renders an egui frame.
+[jobs.example]
+command = ["cargo", "run", "-p", "mcsapi", "--example", "desktop"]
+need_stdout = true
+allow_warnings = true
+
+# [m] The stateless MCP server, rebuilt and restarted on every change.
+# Listens on MCSAPI_MCP_ADDR (default 127.0.0.1:8787) at /mcp.
+[jobs.mcp]
+command = ["cargo", "run", "-p", "mcsapi-mcp"]
+need_stdout = true
+allow_warnings = true
+background = false
+on_change_strategy = "kill_then_restart"
+kill = ["kill", "-s", "INT"]
+
+[keybindings]
+c = "job:clippy"
+t = "job:test"
+d = "job:doc"
+e = "job:example"
+m = "job:mcp"
