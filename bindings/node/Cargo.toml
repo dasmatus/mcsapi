@@ -15,7 +15,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-mcsapi = { path = "../.." }
+mcsapi = { path = "../../crates/mcsapi" }
 napi = { version = "3", default-features = false, features = ["napi6"] }
 napi-derive = "3"
 
