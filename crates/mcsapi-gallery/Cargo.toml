@@ -1,0 +1,25 @@
+[package]
+name = "mcsapi-gallery"
+description = "Widget gallery: every mcsapi shell widget and mcsapi-components component with its variants and states"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+egui.workspace = true
+mcsapi.workspace = true
+mcsapi-components.workspace = true
+mcsapi-ui.workspace = true
+eframe = { workspace = true, optional = true }
+
+[features]
+# A desktop window that runs the gallery through eframe. Off by default to keep
+# CI free of windowing dependencies.
+preview = ["dep:eframe"]
+
+[[bin]]
+name = "mcsapi-gallery"
+required-features = ["preview"]
