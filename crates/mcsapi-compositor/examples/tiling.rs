@@ -8,19 +8,21 @@
 //! Arguments are apps to launch; `clock` is the built-in app. Keys:
 //! Super+Enter launches foot, Super+C the clock, Super+J/K move focus,
 //! Super+Space promotes, Super+1…4 switch workspaces, Super+Q closes,
-//! Super+Escape quits.
+//! Super+B toggles the frosted dock's blur, Super+L toggles 30 fps low power
+//! mode, Super+Escape quits.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use mcsapi::{Desktop, Geometry, WindowId, WorkspaceId};
 use mcsapi_compositor::{
-    App, AppId, Apps, Command, Compositor, InstanceId, KeyInput, KeyRoute, Keysym, Placement,
+    App, AppId, Apps, Blur, Command, Compositor, InstanceId, KeyInput, KeyRoute, Keysym, Placement,
     Shell, Theme, egui,
 };
 use mcsapi_runtime::{Manifest, Runtime};
 
 const TITLE_BAR: i32 = 26;
 const GAP: i32 = 6;
+const DOCK: (i32, i32) = (420, 56);
 
 struct Tiling {
     desktop: Desktop,
@@ -29,6 +31,18 @@ struct Tiling {
     size: (i32, i32),
     theme: Theme,
     commands: Vec<Command>,
+    blur: bool,
+    low_power: bool,
+}
+
+impl Tiling {
+    /// A floating dock centred near the bottom edge.
+    fn dock(&self) -> Geometry {
+        Geometry::new(
+            ((self.size.0 - DOCK.0) / 2, self.size.1 - DOCK.1 - 24).into(),
+            DOCK.into(),
+        )
+    }
 }
 
 impl Shell for Tiling {
@@ -124,6 +138,8 @@ impl Shell for Tiling {
                 self.desktop.focus_previous();
             }
             Keysym::space => self.desktop.promote_focused(),
+            Keysym::b => self.blur = !self.blur,
+            Keysym::l => self.low_power = !self.low_power,
             Keysym::q => {
                 if let Some(w) = self.focused() {
                     self.commands.push(Command::Close(w));
@@ -174,6 +190,57 @@ impl Shell for Tiling {
             egui::FontId::proportional(13.0),
             self.theme.foreground,
         );
+    }
+
+    fn chrome(&mut self, ui: &mut egui::Ui, _elapsed_ms: u32) {
+        let g = self.dock();
+        let dock = egui::Rect::from_min_size(
+            egui::pos2(g.loc.x as f32, g.loc.y as f32),
+            egui::vec2(g.size.w as f32, g.size.h as f32),
+        );
+        // A translucent fill over the blurred backdrop.
+        let painter = ui.painter();
+        painter.rect_filled(dock, 16, self.theme.surface.gamma_multiply(0.55));
+        painter.rect_stroke(
+            dock,
+            16,
+            egui::Stroke::new(1.0, self.theme.border),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            dock.center(),
+            egui::Align2::CENTER_CENTER,
+            format!(
+                "blur {} · {}",
+                if self.blur { "on" } else { "off" },
+                if self.low_power {
+                    "low power, 30 fps"
+                } else {
+                    "60 fps"
+                }
+            ),
+            egui::FontId::proportional(15.0),
+            self.theme.foreground,
+        );
+    }
+
+    fn blur_regions(&self) -> Vec<Blur> {
+        if !self.blur {
+            return Vec::new();
+        }
+        vec![Blur {
+            area: self.dock(),
+            corner_radius: 16,
+            strength: 6,
+        }]
+    }
+
+    fn frame_interval(&self) -> Duration {
+        if self.low_power {
+            Duration::from_millis(33)
+        } else {
+            mcsapi_compositor::DEFAULT_FRAME_INTERVAL
+        }
     }
 
     fn take_commands(&mut self) -> Vec<Command> {
@@ -256,6 +323,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         size: (1280, 800),
         theme: Theme::default(),
         commands: Vec::new(),
+        blur: true,
+        low_power: false,
     };
     let mut compositor = Compositor::new(shell).title("mcsapi tiling").apps(BuiltIn {
         runtime,
