@@ -70,6 +70,7 @@ fn tokens_follow_the_shell_theme() {
 fn every_component_draws() {
     let ctx = egui::Context::default();
     let mut text = String::from("hello");
+    let mut secret = String::new();
     let mut flag = true;
     let mut index = 1;
     let mut choice = Some(0);
@@ -124,7 +125,7 @@ fn every_component_draws() {
         ui.label(typography::inline_code(&tokens, "cargo"));
         blockquote(ui, |ui| ui.label(typography::blockquote(&tokens, "Quote")));
         ui.add(Input::new(&mut text).placeholder("Email"));
-        ui.add(Input::new(&mut text).password(true).width(120.0));
+        ui.add(Input::new(&mut secret).password(true).width(120.0));
         ui.add(Textarea::new(&mut text).rows(2));
         ui.add(Checkbox::new(&mut flag).label("Accept"));
         ui.add(Switch::new(&mut flag).label("Airplane mode"));

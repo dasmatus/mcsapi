@@ -44,24 +44,41 @@
 #![deny(missing_docs)]
 
 mod button;
+mod data;
 mod display;
 mod form;
+mod layout;
+mod menu;
 mod navigation;
 mod overlay;
+mod picker;
 mod tokens;
 
 pub use button::{
     Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Kbd, Toggle, ToggleGroup,
+};
+pub use data::{
+    Chart, ChartKind, DataTable, DataTableState, InputOtp, Series, SortOrder, chart_colors,
+    nice_ceiling,
 };
 pub use display::{
     Alert, AlertVariant, AspectRatio, Avatar, Card, Empty, Label, Progress, Separator, Skeleton,
     Spinner, blockquote, typography,
 };
 pub use form::{Checkbox, Input, RadioGroup, Select, Slider, Switch, Textarea};
+pub use layout::{
+    Carousel, Direction, Drawer, InputGroup, Item, ItemVariant, Resizable, Sheet, Side, Sidebar,
+    button_group, field, form, scroll_area, sidebar_group, sidebar_item,
+};
+pub use menu::{
+    NavigationLink, NavigationMenu, context_menu, dropdown_menu, hover_card, menu_checkbox,
+    menu_item, menu_label, menu_separator, menubar, menubar_menu, navigation_link, popover,
+};
 pub use navigation::{
     Collapsible, Pagination, Table, Tabs, accordion_item, breadcrumb, page_window,
 };
 pub use overlay::{AlertDialog, AlertDialogAction, Dialog, Toast, Toaster, toast, toasts, tooltip};
+pub use picker::{Calendar, Combobox, Command, Date, DatePicker, days_in_month, fuzzy_match};
 pub use tokens::Tokens;
 
 /// Draws shadcn's focus ring around `rect` while `response` has keyboard focus.
