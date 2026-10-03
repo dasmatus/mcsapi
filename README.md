@@ -14,6 +14,12 @@ member:
 | `mcsapi` | `crates/mcsapi` | Desktop policy, layouts, toolkit selection, and shell widgets (the original library; public API unchanged). |
 | `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`. Starter. |
 | `mcsapi-runtime` | `crates/mcsapi-runtime` | Separate runtime for running apps: app registration and instance lifecycle. Starter. |
+| `derisk-apps` | `crates/derisk-apps` | Catalog of the derisk core apps: registers them with `mcsapi-runtime` and keeps running app objects next to their instances. |
+| `derisk-settings` | `crates/derisk-settings` | Settings app and the settings model the shell reads. |
+| `derisk-files` | `crates/derisk-files` | Files app (file manager). |
+| `derisk-editor` | `crates/derisk-editor` | Text Editor app. |
+| `derisk-monitor` | `crates/derisk-monitor` | System Monitor app. |
+| `derisk-calculator` | `crates/derisk-calculator` | Calculator app. |
 
 Shared package metadata and dependency versions live in the root
 `Cargo.toml` under `[workspace.package]` and `[workspace.dependencies]`; a new
@@ -71,6 +77,40 @@ one window in the left half and stacks the others on the right, distributing
 remainder pixels from the top. Tiny outputs return `InsufficientSpace`, rather
 than emitting zero-sized tiles. Monocle configures all windows to the same
 bounds; the host displays only the focused one.
+
+## derisk core apps
+
+The `derisk-*` crates are the core apps of the derisk desktop. Each is an
+`mcsapi_ui::App`, keeps its logic in a UI-free model with its own tests, and
+has a reverse-DNS ID under `org.derisk.*`.
+
+| App | ID | What it does |
+| --- | --- | --- |
+| Files | `org.derisk.files` | Places sidebar, back/forward/up history, sort by name, size, or date, filter, hidden files, new folder/file, rename (never overwrites), copy/cut/paste with `name (copy).ext` on clashes, and the freedesktop.org trash. Files open with `xdg-open`. |
+| Settings | `org.derisk.settings` | Appearance (dark/light, accent, text size, reduced motion), desktop (layout, gaps, workspaces, adaptive profile), keyboard and pointer, notifications, and power. Saves `key = value` lines to `$XDG_CONFIG_HOME/derisk/settings.conf`; `Settings::theme()` gives the shell its colors. |
+| Text Editor | `org.derisk.editor` | Opens UTF-8 files up to 8 MiB, atomic saves that keep file permissions, find and replace, line/column status, unsaved-change prompts. |
+| System Monitor | `org.derisk.monitor` | CPU history graph, memory, swap, load, uptime, and a sortable, filterable process table with End process (SIGTERM), read from `/proc`. |
+| Calculator | `org.derisk.calculator` | Keypad and expression line with precedence, `^`, `%`, functions (`sqrt`, `sin`, `ln`, ...), `pi`, `e`, `ans`, and history. |
+
+A compositor host launches apps through `derisk_apps::Session`, which keeps
+the runtime and the app objects in step:
+
+```rust,ignore
+let mut session = derisk_apps::Session::new()?;
+let files = session.launch(&AppId::new(derisk_apps::FILES).unwrap())?;
+// Each frame, for each instance's surface:
+let app = session.app_mut(files).unwrap();
+let output = mcsapi_ui::run_frame(app, &context, input, &theme);
+```
+
+Until the host can give apps their own surfaces, try them in one window:
+
+```console
+$ cargo run -p derisk-apps --features preview --bin derisk-preview -- org.derisk.files
+```
+
+The preview follows the Settings app's colors and text size live. It is
+behind a feature so CI and library users do not build windowing crates.
 
 ## Smithay integration boundary
 

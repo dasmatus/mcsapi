@@ -13,7 +13,14 @@ repository = "https://github.com/dasmatus/mcsapi"
 mcsapi = { path = "crates/mcsapi", version = "0.1.0" }
 mcsapi-ui = { path = "crates/mcsapi-ui", version = "0.1.0" }
 mcsapi-runtime = { path = "crates/mcsapi-runtime", version = "0.1.0" }
+derisk-settings = { path = "crates/derisk-settings", version = "0.1.0" }
+derisk-files = { path = "crates/derisk-files", version = "0.1.0" }
+derisk-editor = { path = "crates/derisk-editor", version = "0.1.0" }
+derisk-monitor = { path = "crates/derisk-monitor", version = "0.1.0" }
+derisk-calculator = { path = "crates/derisk-calculator", version = "0.1.0" }
+derisk-apps = { path = "crates/derisk-apps", version = "0.1.0" }
 egui = "0.36.2"
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 gpui = { version = "0.2.2", default-features = false, features = ["wayland"] }
 # GPUI 0.2.2 pulls xattr 0.2.3, which needs libc's removed Linux ENOATTR alias.
 libc = "=0.2.186"
