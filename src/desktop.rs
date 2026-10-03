@@ -244,11 +244,35 @@ impl Desktop {
         &self.workspaces[&self.active]
     }
 
-    /// Returns the active workspace for focus and layout changes.
-    pub fn active_mut(&mut self) -> &mut Workspace {
+    fn active_workspace_mut(&mut self) -> &mut Workspace {
         self.workspaces
             .get_mut(&self.active)
             .expect("active workspace exists")
+    }
+
+    /// Changes the active workspace's layout without changing window order or focus.
+    pub fn set_layout(&mut self, layout: Layout) {
+        self.active_workspace_mut().set_layout(layout);
+    }
+
+    /// Focuses a member of the active workspace, leaving state unchanged on error.
+    pub fn focus(&mut self, window: WindowId) -> Result<(), Error> {
+        self.active_workspace_mut().focus(window)
+    }
+
+    /// Cycles focus forward in the active workspace, wrapping at the end.
+    pub fn focus_next(&mut self) -> Option<WindowId> {
+        self.active_workspace_mut().focus_next()
+    }
+
+    /// Cycles focus backward in the active workspace, wrapping at the beginning.
+    pub fn focus_previous(&mut self) -> Option<WindowId> {
+        self.active_workspace_mut().focus_previous()
+    }
+
+    /// Promotes the focused window in the active workspace to the main pane.
+    pub fn promote_focused(&mut self) {
+        self.active_workspace_mut().promote_focused();
     }
 
     /// Activates an existing workspace, preserving each workspace's focus.
@@ -265,7 +289,7 @@ impl Desktop {
         if self.window_workspace(window).is_some() {
             return Err(Error::DuplicateWindow(window));
         }
-        self.active_mut().insert(window);
+        self.active_workspace_mut().insert(window);
         Ok(())
     }
 

@@ -74,14 +74,14 @@ fn windows_have_unique_membership_and_stable_iterator_order() {
 #[test]
 fn focus_wraps_and_promoting_preserves_identity() {
     let mut desktop = desktop();
-    assert_eq!(desktop.active_mut().focus_next(), None);
-    assert_eq!(desktop.active_mut().focus_previous(), None);
+    assert_eq!(desktop.focus_next(), None);
+    assert_eq!(desktop.focus_previous(), None);
     for id in 1..=3 {
         desktop.insert(window(id)).unwrap();
     }
-    assert_eq!(desktop.active_mut().focus_next(), Some(window(1)));
-    assert_eq!(desktop.active_mut().focus_previous(), Some(window(3)));
-    desktop.active_mut().promote_focused();
+    assert_eq!(desktop.focus_next(), Some(window(1)));
+    assert_eq!(desktop.focus_previous(), Some(window(3)));
+    desktop.promote_focused();
     assert!(
         desktop
             .active()
@@ -89,12 +89,50 @@ fn focus_wraps_and_promoting_preserves_identity() {
             .eq([window(3), window(1), window(2)])
     );
     assert_eq!(desktop.active().focused(), Some(window(3)));
-    assert_eq!(desktop.active_mut().focus_previous(), Some(window(2)));
+    assert_eq!(desktop.focus_previous(), Some(window(2)));
     assert_eq!(
-        desktop.active_mut().focus(window(9)),
+        desktop.focus(window(9)),
         Err(Error::UnknownWindow(window(9)))
     );
     assert_eq!(desktop.active().focused(), Some(window(2)));
+}
+
+#[test]
+fn focus_and_layout_changes_preserve_workspace_identity_and_membership() {
+    let mut desktop = Desktop::new([workspace(1), workspace(9)]).unwrap();
+    desktop.insert(window(1)).unwrap();
+    desktop.switch_to(workspace(9)).unwrap();
+    desktop.insert(window(9)).unwrap();
+    desktop.set_layout(Layout::Monocle);
+    assert_eq!(desktop.focus(window(9)), Ok(()));
+
+    desktop.switch_to(workspace(1)).unwrap();
+    desktop.set_layout(Layout::Tall);
+    assert_eq!(desktop.focus(window(1)), Ok(()));
+    desktop.promote_focused();
+    assert_eq!(
+        desktop.workspaces().map(|ws| ws.id()).collect::<Vec<_>>(),
+        [workspace(1), workspace(9)]
+    );
+    assert!(desktop.workspaces().any(|ws| {
+        ws.id() == workspace(1) && ws.windows().eq([window(1)]) && ws.layout() == Layout::Tall
+    }));
+    assert!(desktop.workspaces().any(|ws| {
+        ws.id() == workspace(9) && ws.windows().eq([window(9)]) && ws.layout() == Layout::Monocle
+    }));
+    assert_eq!(
+        desktop.insert(window(1)),
+        Err(Error::DuplicateWindow(window(1)))
+    );
+
+    desktop.move_window(window(9), workspace(1)).unwrap();
+    desktop.remove(window(9)).unwrap();
+    desktop.remove(window(1)).unwrap();
+    assert!(desktop.workspaces().all(|ws| ws.windows().next().is_none()));
+    assert_eq!(
+        desktop.workspaces().map(|ws| ws.id()).collect::<Vec<_>>(),
+        [workspace(1), workspace(9)]
+    );
 }
 
 #[test]
@@ -182,7 +220,7 @@ fn empty_single_and_monocle_layouts_are_well_defined() {
     );
     let mut desktop = desktop();
     desktop.insert(window(1)).unwrap();
-    desktop.active_mut().set_layout(Layout::Monocle);
+    desktop.set_layout(Layout::Monocle);
     assert_eq!(desktop.active().layout(), Layout::Monocle);
 }
 
