@@ -351,7 +351,9 @@ impl App for SettingsApp {
                 if dirty {
                     ui.label(egui::RichText::new("Unsaved changes").color(theme.accent));
                 }
-                if let Some(status) = &self.status {
+                // Only "Saved" goes stale with an edit; a failed save's reason
+                // stays next to "Unsaved changes".
+                if let Some(status) = self.status.as_deref().filter(|s| !dirty || *s != "Saved") {
                     ui.label(status);
                 }
             });
