@@ -1,0 +1,21 @@
+[package]
+name = "mcsapi-mcp"
+description = "Stateless MCP server exposing mcsapi desktop policy as tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+mcsapi.workspace = true
+rmcp = { version = "3.5", features = ["server", "macros", "transport-streamable-http-server"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
