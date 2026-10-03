@@ -1080,7 +1080,7 @@ impl<S: Shell> Host<S> {
         self.shell.tick();
         if self
             .scroll
-            .is_some_and(|(_, at)| self.now_ms().saturating_sub(at) > SCROLL_IDLE_MS)
+            .is_some_and(|(_, at)| self.now_ms().wrapping_sub(at) > SCROLL_IDLE_MS)
         {
             self.end_scroll();
         }

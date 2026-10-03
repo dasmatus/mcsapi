@@ -158,9 +158,11 @@ impl Transform {
     /// Moves by `motion`, scaling and rotating about `pivot` so the content
     /// under the pivot stays under it.
     fn moved(self, motion: Motion, pivot: Pos2, scale_range: &RangeInclusive<f32>) -> Self {
+        // min/max rather than clamp: a reversed or NaN range must not panic.
         let wanted = self.scale * motion.log_scale.exp();
-        let scale = if wanted.is_finite() {
-            wanted.clamp(*scale_range.start(), *scale_range.end())
+        let scale = wanted.max(*scale_range.start()).min(*scale_range.end());
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
         } else {
             self.scale
         };
@@ -223,7 +225,8 @@ pub struct GestureSettings {
     pub min_pan_speed: f32,
     /// Fastest panning momentum, in points per second.
     pub max_pan_speed: f32,
-    /// Allowed [`Transform::scale`] values.
+    /// Allowed [`Transform::scale`] values. A reversed range pins the scale
+    /// to its end; non-positive or NaN results leave the scale unchanged.
     pub scale_range: RangeInclusive<f32>,
     /// Apply pinch rotation; off for content that should only pan and zoom.
     pub rotate: bool,
@@ -452,7 +455,8 @@ impl GestureTracker {
                 self.handle_egui(event, pivot, time, area);
             }
         }
-        if self.is_animating() || matches!(self.phase, Phase::Tracking(_)) {
+        // While fingers are down, their next event triggers the repaint.
+        if self.is_animating() {
             ui.ctx().request_repaint();
         }
         self.transform != before

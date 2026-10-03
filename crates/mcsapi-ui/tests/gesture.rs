@@ -186,6 +186,38 @@ fn scale_limits_hold_without_drifting_the_pivot() {
 }
 
 #[test]
+fn invalid_scale_ranges_never_panic() {
+    for scale_range in [2.0..=1.0, f32::NAN..=f32::NAN, -1.0..=0.0] {
+        let mut tracker = GestureTracker::new(GestureSettings {
+            scale_range,
+            ..GestureSettings::default()
+        });
+        let at = Pos2::ZERO;
+        tracker.handle(GestureEvent::SwipeBegin { fingers: 2 }, at, 0.0);
+        tracker.handle(
+            GestureEvent::SwipeUpdate {
+                delta: vec2(5.0, 0.0),
+            },
+            at,
+            FRAME,
+        );
+        tracker.handle(GestureEvent::PinchBegin { fingers: 2 }, at, 1.0);
+        tracker.handle(
+            GestureEvent::PinchUpdate {
+                delta: Vec2::ZERO,
+                scale: 3.0,
+                rotation: 0.0,
+            },
+            at,
+            1.0 + FRAME,
+        );
+        let t = tracker.transform();
+        assert!(t.scale.is_finite() && t.scale > 0.0);
+        assert!(t.translation.x.is_finite());
+    }
+}
+
+#[test]
 fn rotation_can_be_turned_off() {
     let mut tracker = GestureTracker::new(GestureSettings {
         rotate: false,
