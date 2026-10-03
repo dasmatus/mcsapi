@@ -14,6 +14,7 @@ member:
 | `mcsapi` | `crates/mcsapi` | Desktop policy, layouts, toolkit selection, and shell widgets (the original library; public API unchanged). |
 | `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`. Starter. |
 | `mcsapi-runtime` | `crates/mcsapi-runtime` | Separate runtime for running apps: app registration and instance lifecycle. Starter. |
+| `mcsapi-components` | `crates/mcsapi-components` | Component library for apps: shadcn/ui components as egui widgets themed by the shell `Theme`. Starter. |
 
 Shared package metadata and dependency versions live in the root
 `Cargo.toml` under `[workspace.package]` and `[workspace.dependencies]`; a new

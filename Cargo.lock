@@ -3233,6 +3233,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcsapi-components"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "mcsapi-ui",
+]
+
+[[package]]
 name = "mcsapi-runtime"
 version = "0.1.0"
 
