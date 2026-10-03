@@ -1,0 +1,16 @@
+[package]
+name = "mcsapi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Simple tiling desktop policy and toolkit selection for Smithay compositors"
+license = "GPL-3.0-only"
+repository = "https://github.com/dasmatus/mcsapi"
+
+[dependencies]
+egui = "0.36.2"
+gpui = { version = "0.2.2", default-features = false, features = ["wayland"], optional = true }
+smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend"] }
+
+[features]
+gpui = ["dep:gpui"]
