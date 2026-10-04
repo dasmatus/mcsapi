@@ -18,7 +18,7 @@ A Cargo workspace; every directory under `crates/` is a member and inherits
 | Path | What it is |
 | --- | --- |
 | `crates/mcsapi` | Core policy: `Desktop`, `Workspace`, `WindowId`, `WorkspaceId`, `Layout` (`Tall`, `Monocle`), `Placement`, `toolkit`, `widgets`. |
-| `crates/mcsapi-ui` | `App` trait drawn with egui and the shell `Theme`. |
+| `crates/mcsapi-ui` | `App` trait drawn with egui and the shell `Theme`; `gesture` for 1:1 touchpad pan, pinch and rotate with momentum. |
 | `crates/mcsapi-components` | shadcn/ui-style native egui widgets. |
 | `crates/mcsapi-runtime` | App registration and instance lifecycle; no UI dependency. |
 | `crates/x2mcsapi` | Restyles foreign apps (web, Electron, GTK, Qt) from the `Theme`. |

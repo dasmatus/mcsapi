@@ -3703,6 +3703,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcsapi-components-gpui"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "libc",
+ "mcsapi-components",
+ "mcsapi-ui",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "mcsapi-compositor"
 version = "0.1.0"
 dependencies = [
@@ -3714,6 +3725,18 @@ dependencies = [
  "mcsapi-ui",
  "smithay",
  "subsecond",
+]
+
+[[package]]
+name = "mcsapi-gallery"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "gpui",
+ "mcsapi",
+ "mcsapi-components",
+ "mcsapi-components-gpui",
+ "mcsapi-ui",
 ]
 
 [[package]]

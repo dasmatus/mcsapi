@@ -63,7 +63,7 @@ jobs:
         run: >-
           cargo clippy --locked --workspace --all-targets
           --features mcsapi-compositor/hotpatch
-          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
           -- -D warnings
 
   test:
@@ -99,15 +99,15 @@ jobs:
       - name: Build
         run: >-
           cargo build --locked --workspace --all-targets
-          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
       - name: Test
         run: >-
           cargo test --locked --workspace --all-targets
-          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
       - name: Doc tests
         run: >-
           cargo test --locked --workspace --doc
-          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui' || '' }}
+          ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
       - name: Run headless example
         if: matrix.features == 'default'
         run: cargo run --locked -p mcsapi --example desktop
@@ -126,7 +126,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --locked --workspace --no-deps
-      - run: cargo doc --locked --workspace --no-deps --features mcsapi/gpui
+      - run: cargo doc --locked --workspace --no-deps --features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui
 
   coverage:
     name: Coverage
@@ -170,10 +170,22 @@ jobs:
           tool: cargo-audit
       - run: cargo audit
 
+  nix:
+    name: Nix flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      # Clippy, tests and docs for the default and GPUI builds, rustfmt, the
+      # headless example and every package; see `checks` in flake.nix.
+      - run: nix flake check -L
+      - name: Dev shell
+        run: nix develop -i -k TERM -k HOME -c cargo --version
+
   ci-success:
     name: CI success
     if: always()
-    needs: [fmt, clippy, test, docs, coverage, audit]
+    needs: [fmt, clippy, test, docs, coverage, audit, nix]
     runs-on: ubuntu-latest
     steps:
       - name: Check required jobs
