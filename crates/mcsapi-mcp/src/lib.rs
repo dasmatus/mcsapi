@@ -234,10 +234,28 @@ fn placements(placements: impl Iterator<Item = mcsapi::Placement>) -> Vec<Placem
         .collect()
 }
 
+/// The most workspaces, operations or windows one call may name.
+///
+/// A call is replayed synchronously on a server worker, and some operations
+/// are linear in the number of windows, so an unbounded request (rmcp accepts
+/// bodies of 4 MiB, a few hundred thousand operations) would hold a worker for
+/// quadratic time. Real desktops are many orders of magnitude below this.
+pub const MAX_ITEMS: usize = 10_000;
+
+fn within_limit(what: &str, len: usize) -> Result<(), String> {
+    if len > MAX_ITEMS {
+        Err(format!("too many {what}: {len}, the limit is {MAX_ITEMS}"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Builds a fresh desktop, replays `request.operations`, and returns its state.
 ///
 /// Errors name the failing operation's zero-based index.
 pub fn simulate(request: &SimulateRequest) -> Result<Snapshot, String> {
+    within_limit("workspaces", request.workspaces.len())?;
+    within_limit("operations", request.operations.len())?;
     let ids = request
         .workspaces
         .iter()
@@ -275,6 +293,7 @@ pub fn simulate(request: &SimulateRequest) -> Result<Snapshot, String> {
 
 /// Computes placements for windows already in tiling order.
 pub fn arrange(request: &ArrangeRequest) -> Result<ArrangeResult, String> {
+    within_limit("windows", request.windows.len())?;
     let windows = request
         .windows
         .iter()
