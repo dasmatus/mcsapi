@@ -128,8 +128,10 @@ loop or automatically migrate an already-running UI after a driver failure.
   `Desktop::switch_to`.
 - `widgets::Theme` supplies the shared colors. Selection has a text label, not
   only a color change. egui uses native button focus/activation. GPUI supports
-  focus and Enter/Space activation; host-level focus traversal and accessibility
-  integration remain the host's responsibility.
+  focus and Enter/Space activation; host-level focus traversal remains the
+  host's responsibility. `mcsapi-compositor` publishes egui chrome and apps
+  over AT-SPI; a GPUI program out of process registers its own nodes with the
+  shell (derisk's `register_tree`).
 
 Visual inspiration: [React Bits](https://reactbits.dev) (card emphasis),
 [Aceternity UI](https://ui.aceternity.com) (workspace-like tabs), and
