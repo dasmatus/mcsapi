@@ -316,6 +316,9 @@ pub(crate) struct Host<S: Shell> {
     route: Option<Route>,
     buttons: u32,
     pointer_target: Option<WindowId>,
+    /// A content press was cut off by [`Host::cancel_pointer_route`]; its
+    /// releases still go to Smithay so its pressed-button state clears.
+    cancelled_press: bool,
     egui_mods: egui::Modifiers,
     gesture: Option<GestureRoute>,
     gesture_bridge: EguiBridge,
@@ -464,6 +467,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         route: None,
         buttons: 0,
         pointer_target: None,
+        cancelled_press: false,
         egui_mods: egui::Modifiers::default(),
         gesture: None,
         gesture_bridge: EguiBridge::default(),
@@ -800,6 +804,15 @@ impl<S: Shell> Host<S> {
                 self.space.unmap_elem(window);
             }
         }
+        // The window a press went to, taken away mid-press (a lock screen
+        // hiding everything, a workspace switch), must not keep receiving
+        // the rest of that press through the click grab. A press on a
+        // window that stays is left alone.
+        if let Some(Route::Content(Some(id))) = self.route
+            && !placements.iter().any(|p| p.window == id)
+        {
+            self.cancel_pointer_route();
+        }
         for p in &placements {
             let Some(Content::Wayland(window)) = self.windows.get(&p.window) else {
                 continue;
@@ -857,6 +870,33 @@ impl<S: Shell> Host<S> {
             if let Some(keyboard) = self.seat.get_keyboard() {
                 keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
             }
+        }
+    }
+
+    /// Ends a press that was going to content. The rest of it goes to the
+    /// chrome; Wayland clients get a leave instead of motion and a release,
+    /// and in-process apps see the pointer go.
+    fn cancel_pointer_route(&mut self) {
+        self.route = Some(Route::Chrome);
+        self.cancelled_press = true;
+        let target = self.pointer_target.take();
+        if let Some(events) = self.internal_events(target) {
+            events.push(egui::Event::PointerGone);
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            let serial = SERIAL_COUNTER.next_serial();
+            let time = self.now_ms();
+            pointer.unset_grab(self, serial, time);
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: self.pointer,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(self);
         }
     }
 
@@ -1372,7 +1412,27 @@ impl<S: Shell> Host<S> {
                     pointer.frame(self);
                 }
             }
-            Route::Chrome => self.chrome_events.extend(pointer_event),
+            Route::Chrome => {
+                self.chrome_events.extend(pointer_event);
+                // The cancelled press's client lost focus, so this reaches
+                // no surface; it only keeps Smithay's pressed buttons in
+                // step, or its next click grab would never end.
+                if self.cancelled_press
+                    && !pressed
+                    && let Some(pointer) = self.seat.get_pointer()
+                {
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button,
+                            state,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    );
+                    pointer.frame(self);
+                }
+            }
             Route::Shell => {
                 if !pressed && self.buttons == 0 {
                     self.shell.pointer_up();
@@ -1402,6 +1462,7 @@ impl<S: Shell> Host<S> {
         }
         if self.buttons == 0 {
             self.route = None;
+            self.cancelled_press = false;
             if !pressed {
                 self.pointer_motion(time);
             }
