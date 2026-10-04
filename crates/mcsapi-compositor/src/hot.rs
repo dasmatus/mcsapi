@@ -121,6 +121,10 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::key, &mut self.0, key)
     }
 
+    fn gesture(&mut self, event: &crate::GestureEvent) -> bool {
+        hot!(S::gesture, &mut self.0, event)
+    }
+
     fn client_request(&mut self, window: WindowId, request: ClientRequest) {
         hot!(S::client_request, &mut self.0, window, request)
     }
