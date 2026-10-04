@@ -271,14 +271,6 @@ pub enum Command {
     Close(WindowId),
     /// End the session.
     Quit,
-    /// Type text into the focused window, as an on-screen keyboard does.
-    /// In-process apps get it as text; Wayland clients get the key presses
-    /// that produce it in the session's keymap, so characters the keymap
-    /// can't type are skipped.
-    TypeText(String),
-    /// Press and release a key (Backspace, Return, arrows) in the focused
-    /// window.
-    Key(Keysym),
 }
 
 /// A request a client made about its own window.

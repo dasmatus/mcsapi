@@ -40,7 +40,7 @@ use smithay::{
     desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         Seat, SeatHandler, SeatState,
-        keyboard::{FilterResult, Keycode, Keysym, KeysymHandle, ModifiersState, XkbConfig, xkb},
+        keyboard::{FilterResult, Keysym, KeysymHandle, ModifiersState, XkbConfig},
         pointer::{self, AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent},
     },
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
@@ -303,9 +303,6 @@ pub(crate) struct Host<S: Shell> {
     scroll: Option<(WindowId, u32)>,
     /// The touch point driving the pointer, from its down to its up.
     touch: Option<TouchSlot>,
-    /// Which key, and whether with Shift, types each keysym in the seat's
-    /// keymap; built on first use by [`Command::TypeText`].
-    typing_keys: Option<HashMap<Keysym, (Keycode, bool)>>,
     /// Keys whose press the shell consumed; their release is consumed too.
     consumed_keys: HashSet<u32>,
 
@@ -439,7 +436,6 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         gesture_bridge: EguiBridge::default(),
         scroll: None,
         touch: None,
-        typing_keys: None,
         consumed_keys: HashSet::new(),
         children: Vec::new(),
     };
@@ -515,75 +511,8 @@ impl<S: Shell> Host<S> {
                     Command::Launch(app) => self.launch(&app),
                     Command::Close(window) => self.close(window),
                     Command::Quit => self.signal.stop(),
-                    Command::TypeText(text) => self.type_text(&text),
-                    Command::Key(sym) => self.type_keysym(sym),
                 }
             }
-        }
-    }
-
-    /// Types `text` into the focused window (see [`Command::TypeText`]).
-    fn type_text(&mut self, text: &str) {
-        if let Some(events) = self.internal_events(self.shell.focused()) {
-            events.push(egui::Event::Text(text.to_owned()));
-            return;
-        }
-        for c in text.chars() {
-            let sym = match c {
-                '\n' => Keysym::Return,
-                '\t' => Keysym::Tab,
-                c => xkb::utf32_to_keysym(c as u32),
-            };
-            self.type_keysym(sym);
-        }
-    }
-
-    /// Presses and releases the key for `sym` in the focused window, with
-    /// Shift held around it when the keymap puts `sym` on the shifted level.
-    fn type_keysym(&mut self, sym: Keysym) {
-        if let Some(events) = self.internal_events(self.shell.focused()) {
-            if let Some(key) = egui_key(sym) {
-                for pressed in [true, false] {
-                    events.push(egui::Event::Key {
-                        key,
-                        physical_key: Some(key),
-                        pressed,
-                        repeat: false,
-                        modifiers: egui::Modifiers::NONE,
-                    });
-                }
-            }
-            return;
-        }
-        let keys = self.typing_keys.get_or_insert_with(typing_keys);
-        let Some(&(keycode, shift)) = keys.get(&sym) else {
-            return;
-        };
-        let shift_key = keys.get(&Keysym::Shift_L).map(|&(k, _)| k);
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return;
-        };
-        let time = self.now_ms();
-        // Straight to the client: these are not the person's own key
-        // presses, so shortcuts and the chrome don't see them.
-        let send = |host: &mut Self, key, state| {
-            keyboard.input::<(), _>(
-                host,
-                key,
-                state,
-                SERIAL_COUNTER.next_serial(),
-                time,
-                |_, _, _| FilterResult::Forward,
-            );
-        };
-        let shift_key = shift_key.filter(|_| shift);
-        if let Some(k) = shift_key {
-            send(self, k, KeyState::Pressed);
-        }
-        send(self, keycode, KeyState::Pressed);
-        send(self, keycode, KeyState::Released);
-        if let Some(k) = shift_key {
-            send(self, k, KeyState::Released);
         }
     }
 
@@ -1757,29 +1686,6 @@ fn reset_gl(gl: &glow::Context, screen: [u32; 2]) {
     }
 }
 
-/// For each keysym the default keymap can type, its key and whether it
-/// needs Shift; the unshifted level wins. The seat's keyboard uses the same
-/// default [`XkbConfig`], so the keycodes match what clients were sent.
-fn typing_keys() -> HashMap<Keysym, (Keycode, bool)> {
-    let mut keys = HashMap::new();
-    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-    let Some(keymap) =
-        xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-    else {
-        return keys;
-    };
-    let (min, max) = (keymap.min_keycode().raw(), keymap.max_keycode().raw());
-    for level in [0, 1] {
-        for raw in min..=max {
-            let keycode = Keycode::new(raw);
-            for &sym in keymap.key_get_syms_by_level(keycode, 0, level) {
-                keys.entry(sym).or_insert((keycode, level == 1));
-            }
-        }
-    }
-    keys
-}
-
 fn egui_key(sym: Keysym) -> Option<egui::Key> {
     use egui::Key as K;
     Some(match sym {
@@ -2082,21 +1988,6 @@ mod tests {
         let error =
             write_selection(write, &vec![0; 1024 * 1024], Duration::from_millis(20)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    }
-
-    #[test]
-    fn typing_keys_put_capitals_on_the_shifted_level() {
-        let keys = typing_keys();
-        // No xkeyboard-config data on this machine: nothing to check.
-        if keys.is_empty() {
-            return;
-        }
-        let (lower, lower_shift) = keys[&Keysym::a];
-        let (upper, upper_shift) = keys[&Keysym::A];
-        assert_eq!(lower, upper);
-        assert!(!lower_shift && upper_shift);
-        assert!(keys.contains_key(&Keysym::Shift_L));
-        assert!(keys.contains_key(&Keysym::BackSpace));
     }
 }
 
