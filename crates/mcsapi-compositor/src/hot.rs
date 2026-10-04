@@ -8,7 +8,8 @@ use std::{
 use mcsapi::WindowId;
 
 use crate::{
-    Blur, ClientRequest, Command, KeyInput, KeyRoute, Placement, Press, Shell, Theme, egui,
+    Blur, ClientRequest, Command, KeyInput, KeyRoute, OutputTiming, Placement, Press, Shell, Theme,
+    egui,
 };
 
 /// Calls a shell method through Subsecond's jump table when the `hotpatch`
@@ -154,8 +155,8 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::blur_regions, &self.0)
     }
 
-    fn frame_interval(&self) -> Duration {
-        hot!(S::frame_interval, &self.0)
+    fn frame_interval(&self, timing: &OutputTiming) -> Duration {
+        hot!(S::frame_interval, &self.0, timing)
     }
 
     fn spawn_argv(&mut self, app: &str) -> Vec<String> {
@@ -208,8 +209,8 @@ mod tests {
             self.blurs.clone()
         }
 
-        fn frame_interval(&self) -> Duration {
-            self.interval
+        fn frame_interval(&self, timing: &OutputTiming) -> Duration {
+            self.interval.max(timing.refresh_interval())
         }
     }
 
@@ -224,11 +225,12 @@ mod tests {
             interval: Duration::from_millis(33),
         });
         assert_eq!(shell.blur_regions(), shell.blurs);
-        assert_eq!(shell.frame_interval(), shell.interval);
+        let timing = OutputTiming::default();
+        assert_eq!(shell.frame_interval(&timing), shell.interval);
 
         shell.blurs.clear();
-        shell.interval = Duration::from_millis(16);
+        shell.interval = Duration::ZERO;
         assert!(shell.blur_regions().is_empty());
-        assert_eq!(shell.frame_interval(), shell.interval);
+        assert_eq!(shell.frame_interval(&timing), timing.refresh_interval());
     }
 }

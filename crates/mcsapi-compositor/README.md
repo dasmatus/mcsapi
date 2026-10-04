@@ -20,8 +20,11 @@ The session runs nested in a window of the current X11 or Wayland session
 Effects: shells can ask for frosted-glass panels by returning areas from
 `Shell::blur_regions`; the host blurs what is behind them (dual Kawase, with
 rounded corners) before painting the chrome, and the panel's own fill alpha
-sets how much shows through. `Shell::frame_interval` sets the frame rate, so a
-low power mode can drop to 30 fps or less.
+sets how much shows through. Frames follow the refresh rate of the monitor the
+session window is on; `Shell::frame_interval` can slow them down, and
+`OutputTiming::interval_for` picks a rate the display shows evenly (any rate
+with VRR, a whole number of refreshes without; declare VRR with
+`Compositor::vrr`, since a nested session cannot detect it).
 
 Not yet: a DRM/KMS + libinput backend for running on a bare TTY,
 layer-shell, XWayland, popup grabs, linux-dmabuf.
@@ -36,7 +39,7 @@ $ cargo run -p mcsapi-compositor --example tiling -- foot clock
 `WAYLAND_DISPLAY` set to the session. Super+Enter opens foot, Super+C the
 clock, Super+J/K move focus, Super+Space promotes, Super+1…4 switch
 workspaces, Super+Q closes, Super+B toggles the frosted dock's blur, Super+L
-toggles a 30 fps low power mode, Super+Escape quits.
+toggles a ≤30 fps low power mode, Super+Escape quits.
 
 ## Hot reload in a nested instance
 

@@ -15,7 +15,8 @@
 //! Each frame paints the wallpaper, then for every window from bottom to top
 //! its decoration and its content, then blurs the areas under translucent
 //! panels ([`Shell::blur_regions`]), then the chrome. Frames come every
-//! [`Shell::frame_interval`]. The session runs nested
+//! [`Shell::frame_interval`], by default once per refresh of the monitor the
+//! session window is on. The session runs nested
 //! in a window of the current X11 or Wayland session (Smithay's winit
 //! backend); a DRM/KMS backend is future work.
 //!
@@ -128,8 +129,56 @@ pub struct Blur {
     pub strength: u8,
 }
 
-/// Default time between frames, about 60 per second.
-pub const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// How the output refreshes, passed to [`Shell::frame_interval`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputTiming {
+    /// Refresh rate in millihertz (60 Hz is 60 000).
+    pub refresh_mhz: u32,
+    /// Whether the output has variable refresh rate (VRR, Adaptive-Sync), so
+    /// a frame can be shown whenever it is ready instead of on the next
+    /// fixed refresh.
+    pub vrr: bool,
+}
+
+impl Default for OutputTiming {
+    /// 60 Hz without VRR.
+    fn default() -> Self {
+        Self {
+            refresh_mhz: 60_000,
+            vrr: false,
+        }
+    }
+}
+
+impl OutputTiming {
+    /// One refresh period, the shortest useful frame interval.
+    pub fn refresh_interval(&self) -> Duration {
+        Duration::from_nanos(1_000_000_000_000 / u64::from(self.refresh_mhz.max(1_000)))
+    }
+
+    /// The frame interval for at most `fps` frames per second that this
+    /// output can show evenly. With VRR that is simply `1/fps` (never faster
+    /// than the refresh rate). Without it, frames must land on refreshes, so
+    /// it is the shortest whole number of refresh periods that stays at or
+    /// under `fps`: for 30 fps, 30 on 60 or 120 Hz, 28.8 on 144 Hz and 27.5
+    /// on 165 Hz.
+    pub fn interval_for(&self, fps: u32) -> Duration {
+        let refresh = self.refresh_interval();
+        let wanted = Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1)));
+        if wanted <= refresh {
+            return refresh;
+        }
+        if self.vrr {
+            return wanted;
+        }
+        // In millihertz, so 120 Hz / 30 fps is exactly 4 refreshes.
+        let periods = self
+            .refresh_mhz
+            .max(1_000)
+            .div_ceil(fps.max(1).saturating_mul(1_000));
+        refresh * periods
+    }
+}
 
 /// A set of window edges.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -321,10 +370,11 @@ pub trait Shell: 'static {
         Vec::new()
     }
 
-    /// Time until the next frame, for example longer in a low power mode.
-    /// Clamped to 4 ms–1 s.
-    fn frame_interval(&self) -> Duration {
-        DEFAULT_FRAME_INTERVAL
+    /// Time until the next frame, given how the output refreshes; for
+    /// example longer in a low power mode (see [`OutputTiming::interval_for`]).
+    /// Clamped to 4 ms–1 s. The default renders once per refresh.
+    fn frame_interval(&self, timing: &OutputTiming) -> Duration {
+        timing.refresh_interval()
     }
 
     /// The command line for launching `app` as a Wayland client.
@@ -388,6 +438,7 @@ pub struct Compositor<S> {
     apps: Option<Box<dyn Apps>>,
     size: (i32, i32),
     title: String,
+    vrr: bool,
     launch: Vec<String>,
     jobs: Option<channel::Channel<Job<S>>>,
 }
@@ -400,6 +451,7 @@ impl<S: Shell + 'static> Compositor<S> {
             apps: None,
             size: (1280, 800),
             title: "mcsapi".into(),
+            vrr: false,
             launch: Vec::new(),
             jobs: None,
         }
@@ -420,6 +472,14 @@ impl<S: Shell + 'static> Compositor<S> {
     /// Title of the nested window.
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
+        self
+    }
+
+    /// Declares that the output has variable refresh rate, for example when
+    /// the parent session drives a VRR monitor. Nested sessions cannot detect
+    /// it, so [`OutputTiming::vrr`] is `false` unless set here.
+    pub fn vrr(mut self, vrr: bool) -> Self {
+        self.vrr = vrr;
         self
     }
 
