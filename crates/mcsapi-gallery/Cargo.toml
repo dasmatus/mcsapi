@@ -1,0 +1,26 @@
+[package]
+name = "mcsapi-gallery"
+description = "Widget gallery: every mcsapi shell widget and mcsapi-components component with its variants and states"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+egui.workspace = true
+mcsapi.workspace = true
+mcsapi-components.workspace = true
+mcsapi-ui.workspace = true
+gpui = { workspace = true, optional = true }
+mcsapi-components-gpui = { workspace = true, optional = true }
+
+[features]
+# The gallery window, drawn with GPUI. Off by default so CI and library users
+# do not build GPUI and its Wayland and Vulkan system libraries.
+gpui = ["dep:gpui", "mcsapi/gpui", "mcsapi-components-gpui/gpui"]
+
+[[bin]]
+name = "mcsapi-gallery"
+required-features = ["gpui"]

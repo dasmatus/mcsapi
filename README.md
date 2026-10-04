@@ -14,6 +14,8 @@ member:
 | `mcsapi` | `crates/mcsapi` | Desktop policy, layouts, toolkit selection, and shell widgets (the original library; public API unchanged). |
 | `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`, plus 1:1 touchpad gestures (`gesture`). |
 | `mcsapi-runtime` | `crates/mcsapi-runtime` | Separate runtime for running apps: app registration and instance lifecycle. Starter. |
+| `mcsapi-components-gpui` | `crates/mcsapi-components-gpui` | The `mcsapi-components` library as native GPUI elements, behind its `gpui` feature. |
+| `mcsapi-gallery` | `crates/mcsapi-gallery` | Widget gallery in a GPUI window (`--features gpui`): every shell widget and component with its variants and states, under switchable themes. |
 | `x2mcsapi` | `crates/x2mcsapi` | Adapter that restyles foreign apps (web pages and Electron via an injected script, GTK 3/4, Qt Widgets) from the shell `Theme`, so they look coherent with derisk. |
 | `mcsapi-mcp` | `crates/mcsapi-mcp` | Stateless MCP server exposing desktop policy as `simulate` and `arrange` tools over Streamable HTTP. |
 | `mcsapi-compositor` | `crates/mcsapi-compositor` | Smithay Wayland compositor host: runs a desktop shell (the `Shell` trait) with Wayland clients and in-process `mcsapi-runtime` apps side by side. Nested (winit) backend. |
