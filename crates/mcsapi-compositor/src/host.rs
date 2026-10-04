@@ -2085,6 +2085,22 @@ impl<S: Shell + 'static> XdgShellHandler for Host<S> {
         }
     }
 
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        let Some((id, _)) = self.wayland_window_of(surface.wl_surface()) else {
+            return;
+        };
+        let app_id = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok())
+                .and_then(|d| d.app_id.clone())
+        });
+        if let Some(app_id) = app_id {
+            self.shell.set_app_id(id, &app_id);
+        }
+    }
+
     fn title_changed(&mut self, surface: ToplevelSurface) {
         let Some((id, _)) = self.wayland_window_of(surface.wl_surface()) else {
             return;

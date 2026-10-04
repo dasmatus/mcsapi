@@ -320,6 +320,11 @@ pub trait Shell: 'static {
     /// A window changed its title.
     fn set_title(&mut self, _window: WindowId, _title: &str) {}
 
+    /// A window changed its app ID. GPUI and some other toolkits set it
+    /// only after the commit that maps the window, so
+    /// [`Shell::map_window`] can see `app`.
+    fn set_app_id(&mut self, _window: WindowId, _app_id: &str) {}
+
     /// Focus a window (secondary clicks on window content).
     fn focus(&mut self, _window: WindowId) {}
 

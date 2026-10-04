@@ -95,6 +95,10 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::set_title, &mut self.0, window, title)
     }
 
+    fn set_app_id(&mut self, window: WindowId, app_id: &str) {
+        hot!(S::set_app_id, &mut self.0, window, app_id)
+    }
+
     fn focus(&mut self, window: WindowId) {
         hot!(S::focus, &mut self.0, window)
     }
