@@ -74,6 +74,7 @@ pub(super) const SPECIMENS: &[Specimen] = &[
 pub(super) struct State {
     name: String,
     password: String,
+    reveal: bool,
     message: String,
     terms: bool,
     updates: bool,
@@ -91,6 +92,7 @@ impl Default for State {
         Self {
             name: String::new(),
             password: String::new(),
+            reveal: false,
             message: String::new(),
             terms: false,
             updates: true,
@@ -117,10 +119,11 @@ fn input(ui: &mut Ui, state: &mut super::State) {
     row(ui, "Password", |ui| {
         ui.add(
             Input::new(&mut state.password)
-                .password(true)
+                .password(!state.reveal)
                 .placeholder("Type a password")
                 .width(240.0),
         );
+        ui.add(Checkbox::new(&mut state.reveal).label("Show"));
     });
     disabled_row(ui, |ui| {
         ui.add(Input::new(&mut "Read only".to_owned()).width(240.0));

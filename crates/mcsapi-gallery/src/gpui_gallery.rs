@@ -655,13 +655,22 @@ fn kbd(_: &mut GalleryView, t: &Tokens, _: &mut Window, _: &mut Context<GalleryV
     ])
 }
 
-fn input(view: &mut GalleryView, t: &Tokens, _: &mut Window, _: &mut Context<GalleryView>) -> Div {
+fn input(view: &mut GalleryView, t: &Tokens, _: &mut Window, cx: &mut Context<GalleryView>) -> Div {
+    let revealed = !view.password.read(cx).is_masked();
     rows([
         row(t, "Placeholder", [any(Input::new(&view.name).width(240.0))]),
         row(
             t,
             "Password",
-            [any(Input::new(&view.password).width(240.0))],
+            [
+                any(Input::new(&view.password).width(240.0)),
+                any(Checkbox::new("reveal", revealed)
+                    .label("Show")
+                    .on_change(cx.listener(|this, on: &bool, _, cx| {
+                        this.password
+                            .update(cx, |input, cx| input.set_masked(!*on, cx));
+                    }))),
+            ],
         ),
         row(
             t,

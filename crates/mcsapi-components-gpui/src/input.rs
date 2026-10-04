@@ -135,6 +135,17 @@ impl TextInput {
         self
     }
 
+    /// Masks or reveals the text, for a "show password" control.
+    pub fn set_masked(&mut self, masked: bool, cx: &mut Context<Self>) {
+        self.masked = masked;
+        cx.notify();
+    }
+
+    /// Whether the text is shown as dots.
+    pub fn is_masked(&self) -> bool {
+        self.masked
+    }
+
     /// Makes the field read-only and unfocusable while `true`.
     pub fn set_disabled(&mut self, disabled: bool) {
         self.disabled = disabled;
