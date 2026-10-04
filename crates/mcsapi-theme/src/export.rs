@@ -35,14 +35,20 @@ pub struct Portal {
 
 /// The freedesktop appearance settings for `theme`.
 pub fn portal(theme: &Theme) -> Portal {
-    let [r, g, b, _] = theme.palette.accent.to_f32();
     let p = &theme.palette;
+    // Straight from the bytes: going through f32 would print as
+    // 0.1764705926179886 instead of 0.17647058823529413.
+    let channel = |c: u8| f64::from(c) / 255.0;
     Portal {
         color_scheme: match theme.scheme {
             Scheme::Dark => 1,
             Scheme::Light => 2,
         },
-        accent_color: (f64::from(r), f64::from(g), f64::from(b)),
+        accent_color: (
+            channel(p.accent.r),
+            channel(p.accent.g),
+            channel(p.accent.b),
+        ),
         // WCAG AAA body text is 7:1; a theme that keeps even its borders at
         // that contrast is a high-contrast theme, and apps should follow.
         contrast: u32::from(p.border.contrast(p.background) >= 7.0),
