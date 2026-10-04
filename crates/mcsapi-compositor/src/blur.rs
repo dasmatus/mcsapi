@@ -40,8 +40,8 @@ pub(crate) struct GlRect {
 pub(crate) fn regions(blur: &Blur, screen: [u32; 2]) -> Option<(GlRect, GlRect)> {
     let (sw, sh) = (screen[0] as i32, screen[1] as i32);
     let g = blur.area;
-    let (x0, x1) = (g.loc.x.max(0), (g.loc.x + g.size.w).min(sw));
-    let (top, bottom) = (g.loc.y.max(0), (g.loc.y + g.size.h).min(sh));
+    let (x0, x1) = (g.loc.x.max(0), g.loc.x.saturating_add(g.size.w).min(sw));
+    let (top, bottom) = (g.loc.y.max(0), g.loc.y.saturating_add(g.size.h).min(sh));
     if x1 <= x0 || bottom <= top {
         return None;
     }
@@ -405,14 +405,14 @@ impl Blurrer {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.levels[1]));
             set(&self.up, 1);
             let radius = f32::from(blur.corner_radius)
-                .min(region.w as f32 / 2.0)
-                .min(region.h as f32 / 2.0);
+                .min(blur.area.size.w.max(0) as f32 / 2.0)
+                .min(blur.area.size.h.max(0) as f32 / 2.0);
             gl.uniform_4_f32(
                 self.up.rect.as_ref(),
-                region.x as f32,
-                region.y as f32,
-                region.w as f32,
-                region.h as f32,
+                blur.area.loc.x as f32,
+                screen[1] as f32 - (blur.area.loc.y as f32 + blur.area.size.h as f32),
+                blur.area.size.w as f32,
+                blur.area.size.h as f32,
             );
             gl.uniform_1_f32(self.up.radius.as_ref(), radius);
             gl.uniform_1_f32(self.up.clip.as_ref(), 1.0);
