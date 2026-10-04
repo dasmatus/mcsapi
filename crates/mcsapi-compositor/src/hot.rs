@@ -1,10 +1,15 @@
 //! Hot-patching a shell while its nested session keeps running.
 
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    time::Duration,
+};
 
 use mcsapi::WindowId;
 
-use crate::{ClientRequest, Command, KeyInput, KeyRoute, Placement, Press, Shell, Theme, egui};
+use crate::{
+    Blur, ClientRequest, Command, KeyInput, KeyRoute, Placement, Press, Shell, Theme, egui,
+};
 
 /// Calls a shell method through Subsecond's jump table when the `hotpatch`
 /// feature is on, so the newest patched version runs. Release builds and
@@ -145,6 +150,14 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::chrome, &mut self.0, ui, elapsed_ms)
     }
 
+    fn blur_regions(&self) -> Vec<Blur> {
+        hot!(S::blur_regions, &self.0)
+    }
+
+    fn frame_interval(&self) -> Duration {
+        hot!(S::frame_interval, &self.0)
+    }
+
     fn spawn_argv(&mut self, app: &str) -> Vec<String> {
         hot!(S::spawn_argv, &mut self.0, app)
     }
@@ -164,3 +177,58 @@ pub(crate) fn connect() {
 
 #[cfg(not(feature = "hotpatch"))]
 pub(crate) fn connect() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestShell {
+        blurs: Vec<Blur>,
+        interval: Duration,
+    }
+
+    impl Shell for TestShell {
+        fn map_window(&mut self, _: &str, _: &str) -> WindowId {
+            WindowId::new(1).unwrap()
+        }
+
+        fn unmap_window(&mut self, _: WindowId) {}
+
+        fn set_output(&mut self, _: (i32, i32)) {}
+
+        fn focused(&self) -> Option<WindowId> {
+            None
+        }
+
+        fn placements(&self) -> Vec<Placement> {
+            Vec::new()
+        }
+
+        fn blur_regions(&self) -> Vec<Blur> {
+            self.blurs.clone()
+        }
+
+        fn frame_interval(&self) -> Duration {
+            self.interval
+        }
+    }
+
+    #[test]
+    fn forwards_blur_and_frame_interval() {
+        let mut shell = Hot(TestShell {
+            blurs: vec![Blur {
+                area: mcsapi::Geometry::new((10, 20).into(), (420, 56).into()),
+                corner_radius: 12,
+                strength: 3,
+            }],
+            interval: Duration::from_millis(33),
+        });
+        assert_eq!(shell.blur_regions(), shell.blurs);
+        assert_eq!(shell.frame_interval(), shell.interval);
+
+        shell.blurs.clear();
+        shell.interval = Duration::from_millis(16);
+        assert!(shell.blur_regions().is_empty());
+        assert_eq!(shell.frame_interval(), shell.interval);
+    }
+}

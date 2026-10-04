@@ -82,8 +82,8 @@ use smithay::{
 };
 
 use crate::{
-    Apps, ClientRequest, Command, Compositor, GestureEvent, InstanceId, Job, KeyInput, KeyRoute,
-    Modifiers, Placement, Press, Shell, egui,
+    Apps, Blur, ClientRequest, Command, Compositor, GestureEvent, InstanceId, Job, KeyInput,
+    KeyRoute, Modifiers, Placement, Press, Shell, blur, egui,
 };
 use mcsapi_ui::gesture::EguiBridge;
 
@@ -170,6 +170,7 @@ pub(crate) struct Host<S: Shell> {
     backend: WinitGraphicsBackend<GlesRenderer>,
     gl: Option<Arc<glow::Context>>,
     retired: Vec<egui_glow::Painter>,
+    blurrer: Option<blur::Blurrer>,
 
     shell: S,
     apps: Option<Box<dyn Apps>>,
@@ -299,6 +300,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         backend,
         gl: None,
         retired: Vec::new(),
+        blurrer: None,
         shell,
         apps,
         windows: HashMap::new(),
@@ -346,7 +348,10 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         .handle()
         .insert_source(Timer::immediate(), |_, _, host| {
             host.render();
-            TimeoutAction::ToDuration(Duration::from_millis(16))
+            let interval = host.shell.frame_interval();
+            TimeoutAction::ToDuration(
+                interval.clamp(Duration::from_millis(4), Duration::from_secs(1)),
+            )
         })?;
 
     event_loop.run(None, &mut host, |host| {
@@ -1113,6 +1118,7 @@ impl<S: Shell> Host<S> {
             textures: output.textures_delta,
         };
 
+        let blurs = self.shell.blur_regions();
         let placements = self.shell.placements();
         let background = self.paint_only(screen, time, |shell, painter| {
             shell.paint_background(painter, screen)
@@ -1126,7 +1132,15 @@ impl<S: Shell> Host<S> {
             contents.push(self.run_internal(p, time));
         }
 
-        if let Err(e) = self.draw(size, &placements, background, decorations, contents, chrome) {
+        if let Err(e) = self.draw(
+            size,
+            &placements,
+            background,
+            decorations,
+            contents,
+            &blurs,
+            chrome,
+        ) {
             eprintln!("mcsapi-compositor: render failed: {e}");
         }
 
@@ -1216,6 +1230,7 @@ impl<S: Shell> Host<S> {
         Some(pass)
     }
 
+    #[allow(clippy::too_many_arguments)] // one per layer of the frame
     fn draw(
         &mut self,
         size: Size<i32, Physical>,
@@ -1223,6 +1238,7 @@ impl<S: Shell> Host<S> {
         mut background: Pass,
         decorations: Vec<Pass>,
         contents: Vec<Option<Pass>>,
+        blurs: &[Blur],
         mut chrome: Pass,
     ) -> Result {
         let scale = Scale::from(1.0);
@@ -1315,6 +1331,22 @@ impl<S: Shell> Host<S> {
                 )?;
             }
         }
+        if !blurs.is_empty() {
+            if self.blurrer.is_none() {
+                // SAFETY: the frame's context is current while it is open.
+                match unsafe { blur::Blurrer::new(&gl) } {
+                    Ok(b) => self.blurrer = Some(b),
+                    Err(e) => eprintln!("mcsapi-compositor: blur unavailable: {e}"),
+                }
+            }
+            if let Some(blurrer) = &mut self.blurrer {
+                // SAFETY: as above, with the frame's framebuffer bound.
+                if let Err(e) = unsafe { blurrer.apply(&gl, screen_px, blurs) } {
+                    eprintln!("mcsapi-compositor: blur failed: {e}");
+                }
+                reset_gl(&gl, screen_px);
+            }
+        }
         let chrome_painter = self.chrome.painter.as_mut().expect("created above");
         paint(&gl, chrome_painter, screen_px, &mut chrome);
         let _sync = frame.finish()?;
@@ -1389,8 +1421,13 @@ fn paint_cursor(ctx: &egui::Context, at: egui::Pos2) {
 /// Paints an egui pass into the bound framebuffer, then restores the GL
 /// state Smithay's renderer relies on.
 fn paint(gl: &glow::Context, painter: &mut egui_glow::Painter, screen: [u32; 2], pass: &mut Pass) {
-    use glow::HasContext as _;
     painter.paint_and_update_textures(screen, 1.0, &pass.primitives, &mut pass.textures);
+    reset_gl(gl, screen);
+}
+
+/// Restores the GL state Smithay's renderer relies on.
+fn reset_gl(gl: &glow::Context, screen: [u32; 2]) {
+    use glow::HasContext as _;
     // SAFETY: plain state resets on the current context.
     unsafe {
         gl.disable(glow::SCISSOR_TEST);
