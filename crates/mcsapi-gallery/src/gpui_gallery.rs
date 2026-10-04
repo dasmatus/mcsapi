@@ -182,7 +182,9 @@ impl GalleryView {
             align: None,
             view: Some(1),
             name: text(cx, |input| input.placeholder("Your name")),
-            password: text(cx, |input| input.masked(true).with_text("hunter2")),
+            password: text(cx, |input| {
+                input.masked(true).placeholder("Type a password")
+            }),
             read_only,
             message: text(cx, |input| {
                 input.multiline(true).placeholder("Type your message here.")

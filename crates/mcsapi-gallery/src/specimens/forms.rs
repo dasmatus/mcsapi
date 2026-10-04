@@ -90,7 +90,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             name: String::new(),
-            password: "hunter2".to_owned(),
+            password: String::new(),
             message: String::new(),
             terms: false,
             updates: true,
@@ -115,7 +115,12 @@ fn input(ui: &mut Ui, state: &mut super::State) {
         );
     });
     row(ui, "Password", |ui| {
-        ui.add(Input::new(&mut state.password).password(true).width(240.0));
+        ui.add(
+            Input::new(&mut state.password)
+                .password(true)
+                .placeholder("Type a password")
+                .width(240.0),
+        );
     });
     disabled_row(ui, |ui| {
         ui.add(Input::new(&mut "Read only".to_owned()).width(240.0));
