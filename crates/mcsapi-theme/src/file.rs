@@ -3,7 +3,8 @@
 //! A theme file is a small subset of TOML, so TOML editors highlight it and
 //! TOML tools can read it, without this crate depending on a TOML parser:
 //! `[section]` headers, `key = value` lines, and `#` comments. Values are
-//! double-quoted strings (with `\"` and `\\` escapes), numbers, or `true` and
+//! double-quoted strings (with `\"` and `\\` escapes, and no others: no
+//! value in a theme needs a line break), numbers, or `true` and
 //! `false`. Every key is optional; missing ones come from the theme named by
 //! `inherits`, or from `derisk-dark` when there is none.
 //!
@@ -114,8 +115,6 @@ fn parse_value(text: &str) -> Option<Value> {
                 '\\' => match chars.next()? {
                     '"' => out.push('"'),
                     '\\' => out.push('\\'),
-                    'n' => out.push('\n'),
-                    't' => out.push('\t'),
                     _ => return None,
                 },
                 c => out.push(c),
