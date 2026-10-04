@@ -8,9 +8,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+dioxus-devtools = { version = "0.7.10", optional = true }
 egui_glow = { version = "0.36.2", default-features = false }
 glow = "0.17"
 mcsapi.workspace = true
 mcsapi-runtime.workspace = true
 mcsapi-ui.workspace = true
+libc.workspace = true
 smithay = { workspace = true, features = ["backend_winit", "desktop", "renderer_gl"] }
+subsecond = { version = "0.7.10", optional = true }
+
+[features]
+# Hot-patch a `Hot`-wrapped shell from `dx serve --hot-patch` in debug builds.
+hotpatch = ["dep:dioxus-devtools", "dep:subsecond"]

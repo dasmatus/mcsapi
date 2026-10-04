@@ -15,7 +15,8 @@
 //! Each frame paints the wallpaper, then for every window from bottom to top
 //! its decoration and its content, then blurs the areas under translucent
 //! panels ([`Shell::blur_regions`]), then the chrome. Frames come every
-//! [`Shell::frame_interval`]. The session runs nested
+//! [`Shell::frame_interval`], by default once per refresh of the monitor the
+//! session window is on. The session runs nested
 //! in a window of the current X11 or Wayland session (Smithay's winit
 //! backend); a DRM/KMS backend is future work.
 //!
@@ -70,14 +71,17 @@
 
 mod blur;
 mod host;
+mod hot;
 
 use std::{fmt, time::Duration};
 
 use mcsapi::{Geometry, WindowId};
 pub use mcsapi_runtime::{AppId, InstanceId};
-pub use mcsapi_ui::{App, Theme, egui};
+pub use mcsapi_ui::{App, GestureEvent, Theme, egui};
 pub use smithay::input::keyboard::Keysym;
 use smithay::reexports::calloop::channel;
+
+pub use hot::Hot;
 
 /// Where a window is drawn this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,8 +129,56 @@ pub struct Blur {
     pub strength: u8,
 }
 
-/// Default time between frames, about 60 per second.
-pub const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// How the output refreshes, passed to [`Shell::frame_interval`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputTiming {
+    /// Refresh rate in millihertz (60 Hz is 60 000).
+    pub refresh_mhz: u32,
+    /// Whether the output has variable refresh rate (VRR, Adaptive-Sync), so
+    /// a frame can be shown whenever it is ready instead of on the next
+    /// fixed refresh.
+    pub vrr: bool,
+}
+
+impl Default for OutputTiming {
+    /// 60 Hz without VRR.
+    fn default() -> Self {
+        Self {
+            refresh_mhz: 60_000,
+            vrr: false,
+        }
+    }
+}
+
+impl OutputTiming {
+    /// One refresh period, the shortest useful frame interval.
+    pub fn refresh_interval(&self) -> Duration {
+        Duration::from_nanos(1_000_000_000_000 / u64::from(self.refresh_mhz.max(1_000)))
+    }
+
+    /// The frame interval for at most `fps` frames per second that this
+    /// output can show evenly. With VRR that is simply `1/fps` (never faster
+    /// than the refresh rate). Without it, frames must land on refreshes, so
+    /// it is the shortest whole number of refresh periods that stays at or
+    /// under `fps`: for 30 fps, 30 on 60 or 120 Hz, 28.8 on 144 Hz and 27.5
+    /// on 165 Hz.
+    pub fn interval_for(&self, fps: u32) -> Duration {
+        let refresh = self.refresh_interval();
+        let wanted = Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1)));
+        if wanted <= refresh {
+            return refresh;
+        }
+        if self.vrr {
+            return wanted;
+        }
+        // In millihertz, so 120 Hz / 30 fps is exactly 4 refreshes.
+        let periods = self
+            .refresh_mhz
+            .max(1_000)
+            .div_ceil(fps.max(1).saturating_mul(1_000));
+        refresh * periods
+    }
+}
 
 /// A set of window edges.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -160,6 +212,7 @@ impl Edges {
 
 /// What a primary-button press handled by [`Shell::pointer_down`] did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Press {
     /// Forward the press (and the drag that follows) to the window content.
     Client,
@@ -196,6 +249,7 @@ pub struct KeyInput {
 
 /// Who receives a key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum KeyRoute {
     /// The shell consumed it (a shortcut).
     Consume,
@@ -207,6 +261,7 @@ pub enum KeyRoute {
 
 /// Work for the host, returned by [`Shell::take_commands`].
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Command {
     /// Launch an app: an in-process app if the [`Apps`] provider resolves
     /// the name, otherwise the program from [`Shell::spawn_argv`] with
@@ -220,6 +275,7 @@ pub enum Command {
 
 /// A request a client made about its own window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ClientRequest {
     /// Toggle maximized.
     Maximize,
@@ -277,11 +333,18 @@ pub trait Shell: 'static {
     /// Release of a press the shell handled.
     fn pointer_up(&mut self) {}
 
-    /// Decides who gets a key. Called for presses and for releases of keys
-    /// whose press was not consumed; releasing a consumed key is consumed
-    /// too, so clients never see half a shortcut.
+    /// Decides who gets a key. Called for every press and release. Releases
+    /// of consumed presses are still offered here, but remain hidden from clients.
     fn key(&mut self, _key: &KeyInput) -> KeyRoute {
         KeyRoute::Client
+    }
+
+    /// A touchpad gesture. Return `true` from a begin event to take the whole
+    /// gesture (for example three-finger swipes between workspaces); its later
+    /// events then all come here and the return value is ignored. Gestures
+    /// the shell leaves go to the chrome or the content under the pointer.
+    fn gesture(&mut self, _event: &GestureEvent) -> bool {
+        false
     }
 
     /// A client asked to change its window state.
@@ -307,10 +370,11 @@ pub trait Shell: 'static {
         Vec::new()
     }
 
-    /// Time until the next frame, for example longer in a low power mode.
-    /// Clamped to 4 ms–1 s.
-    fn frame_interval(&self) -> Duration {
-        DEFAULT_FRAME_INTERVAL
+    /// Time until the next frame, given how the output refreshes; for
+    /// example longer in a low power mode (see [`OutputTiming::interval_for`]).
+    /// Clamped to 4 ms–1 s. The default renders once per refresh.
+    fn frame_interval(&self, timing: &OutputTiming) -> Duration {
+        timing.refresh_interval()
     }
 
     /// The command line for launching `app` as a Wayland client.
@@ -374,6 +438,7 @@ pub struct Compositor<S> {
     apps: Option<Box<dyn Apps>>,
     size: (i32, i32),
     title: String,
+    vrr: bool,
     launch: Vec<String>,
     jobs: Option<channel::Channel<Job<S>>>,
 }
@@ -386,6 +451,7 @@ impl<S: Shell + 'static> Compositor<S> {
             apps: None,
             size: (1280, 800),
             title: "mcsapi".into(),
+            vrr: false,
             launch: Vec::new(),
             jobs: None,
         }
@@ -409,6 +475,14 @@ impl<S: Shell + 'static> Compositor<S> {
         self
     }
 
+    /// Declares that the output has variable refresh rate, for example when
+    /// the parent session drives a VRR monitor. Nested sessions cannot detect
+    /// it, so [`OutputTiming::vrr`] is `false` unless set here.
+    pub fn vrr(mut self, vrr: bool) -> Self {
+        self.vrr = vrr;
+        self
+    }
+
     /// Launches an app once the session is up (see [`Command::Launch`]).
     pub fn launch(mut self, app: impl Into<String>) -> Self {
         self.launch.push(app.into());
@@ -423,7 +497,11 @@ impl<S: Shell + 'static> Compositor<S> {
     }
 
     /// Runs the session until its window closes or the shell quits.
+    ///
+    /// With the `hotpatch` feature in a debug build, this also listens for
+    /// patches from `dx serve --hot-patch`; see [`Hot`].
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        hot::connect();
         host::run(self)
     }
 }

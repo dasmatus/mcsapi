@@ -40,8 +40,8 @@ pub(crate) struct GlRect {
 pub(crate) fn regions(blur: &Blur, screen: [u32; 2]) -> Option<(GlRect, GlRect)> {
     let (sw, sh) = (screen[0] as i32, screen[1] as i32);
     let g = blur.area;
-    let (x0, x1) = (g.loc.x.max(0), (g.loc.x + g.size.w).min(sw));
-    let (top, bottom) = (g.loc.y.max(0), (g.loc.y + g.size.h).min(sh));
+    let (x0, x1) = (g.loc.x.max(0), g.loc.x.saturating_add(g.size.w).min(sw));
+    let (top, bottom) = (g.loc.y.max(0), g.loc.y.saturating_add(g.size.h).min(sh));
     if x1 <= x0 || bottom <= top {
         return None;
     }
@@ -150,17 +150,30 @@ impl Program {
                 (glow::VERTEX_SHADER, VERTEX),
                 (glow::FRAGMENT_SHADER, fragment),
             ] {
-                let shader = gl.create_shader(kind)?;
-                gl.shader_source(shader, source);
-                gl.compile_shader(shader);
-                if !gl.get_shader_compile_status(shader) {
-                    let log = gl.get_shader_info_log(shader);
-                    gl.delete_shader(shader);
-                    gl.delete_program(program);
-                    return Err(format!("blur shader: {log}"));
+                let compiled = gl.create_shader(kind).and_then(|shader| {
+                    gl.shader_source(shader, source);
+                    gl.compile_shader(shader);
+                    if gl.get_shader_compile_status(shader) {
+                        Ok(shader)
+                    } else {
+                        let log = gl.get_shader_info_log(shader);
+                        gl.delete_shader(shader);
+                        Err(format!("blur shader: {log}"))
+                    }
+                });
+                match compiled {
+                    Ok(shader) => {
+                        gl.attach_shader(program, shader);
+                        shaders.push(shader);
+                    }
+                    Err(e) => {
+                        for shader in shaders {
+                            gl.delete_shader(shader);
+                        }
+                        gl.delete_program(program);
+                        return Err(e);
+                    }
                 }
-                gl.attach_shader(program, shader);
-                shaders.push(shader);
             }
             gl.bind_attrib_location(program, 0, "a_pos");
             gl.link_program(program);
@@ -206,14 +219,34 @@ impl Blurrer {
         // SAFETY: the caller guarantees a current context.
         unsafe {
             let down = Program::new(gl, DOWN)?;
-            let up = Program::new(gl, UP)?;
-            let quad = gl.create_buffer()?;
+            let up = match Program::new(gl, UP) {
+                Ok(up) => up,
+                Err(e) => {
+                    gl.delete_program(down.program);
+                    return Err(e);
+                }
+            };
+            let fail = |e: String, quad: Option<glow::Buffer>| {
+                gl.delete_program(down.program);
+                gl.delete_program(up.program);
+                if let Some(quad) = quad {
+                    gl.delete_buffer(quad);
+                }
+                Err(e)
+            };
+            let quad = match gl.create_buffer() {
+                Ok(quad) => quad,
+                Err(e) => return fail(e, None),
+            };
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(quad));
             let corners: [f32; 8] = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
             let bytes: Vec<u8> = corners.iter().flat_map(|f| f.to_ne_bytes()).collect();
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STATIC_DRAW);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            let fbo = gl.create_framebuffer()?;
+            let fbo = match gl.create_framebuffer() {
+                Ok(fbo) => fbo,
+                Err(e) => return fail(e, Some(quad)),
+            };
             Ok(Self {
                 down,
                 up,
@@ -405,14 +438,14 @@ impl Blurrer {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.levels[1]));
             set(&self.up, 1);
             let radius = f32::from(blur.corner_radius)
-                .min(region.w as f32 / 2.0)
-                .min(region.h as f32 / 2.0);
+                .min(blur.area.size.w.max(0) as f32 / 2.0)
+                .min(blur.area.size.h.max(0) as f32 / 2.0);
             gl.uniform_4_f32(
                 self.up.rect.as_ref(),
-                region.x as f32,
-                region.y as f32,
-                region.w as f32,
-                region.h as f32,
+                blur.area.loc.x as f32,
+                screen[1] as f32 - (blur.area.loc.y as f32 + blur.area.size.h as f32),
+                blur.area.size.w as f32,
+                blur.area.size.h as f32,
             );
             gl.uniform_1_f32(self.up.radius.as_ref(), radius);
             gl.uniform_1_f32(self.up.clip.as_ref(), 1.0);

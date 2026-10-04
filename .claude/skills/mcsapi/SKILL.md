@@ -18,10 +18,11 @@ A Cargo workspace; every directory under `crates/` is a member and inherits
 | Path | What it is |
 | --- | --- |
 | `crates/mcsapi` | Core policy: `Desktop`, `Workspace`, `WindowId`, `WorkspaceId`, `Layout` (`Tall`, `Monocle`), `Placement`, `toolkit`, `widgets`. |
-| `crates/mcsapi-ui` | `App` trait drawn with egui and the shell `Theme`. |
+| `crates/mcsapi-ui` | `App` trait drawn with egui and the shell `Theme`; `gesture` for 1:1 touchpad pan, pinch and rotate with momentum. |
 | `crates/mcsapi-components` | shadcn/ui-style native egui widgets. |
 | `crates/mcsapi-runtime` | App registration and instance lifecycle; no UI dependency. |
 | `crates/x2mcsapi` | Restyles foreign apps (web, Electron, GTK, Qt) from the `Theme`. |
+| `crates/mcsapi-compositor` | Smithay host that runs a desktop nested in a window; `Hot` shell wrapper for hot-patching. |
 | `crates/mcsapi-mcp` | Stateless MCP server exposing the policy as tools. |
 | `bindings/node` | napi-rs Node addon; separate `Cargo.lock`, not a workspace member. |
 
@@ -61,14 +62,27 @@ and tests before pushing; commit `Cargo.lock` changes.
 
 ## Hot reload
 
-`bacon.toml` defines watch jobs (`cargo install --locked bacon` once):
+A nested desktop that hot-patches while running (debug builds only):
 
-- `bacon` re-checks the workspace on every save.
-- `bacon test`, `bacon clippy`, `bacon doc`, `bacon example` rerun those.
-- `bacon mcp` rebuilds and restarts the MCP server on every save.
+```sh
+cargo install --locked dioxus-cli@0.7.10   # once
+dx serve --hot-patch --platform linux -p mcsapi-compositor --example tiling \
+  --features hotpatch --args clock
+```
 
-In a non-interactive shell use `bacon --headless <job>`, or just run the cargo
-command directly; bacon needs a terminal UI for its key bindings.
+- Edits to `Shell` methods in the binary's own crate (`examples/tiling.rs`,
+  or a desktop's `main.rs` crate) apply on save without restarting; windows,
+  clients and shell state survive. The shell must be wrapped in
+  `mcsapi_compositor::Hot`.
+- Struct field changes and edits to library crates are not patched: press
+  `r` in `dx serve`, or use `bacon nested`, which rebuilds and restarts.
+- The nested window needs a display; headless, run it under
+  `xvfb-run -a` with `XDG_RUNTIME_DIR` set (Mesa llvmpipe is enough).
+
+`bacon.toml` also defines watch jobs (`cargo install --locked bacon` once):
+`bacon` re-checks on save; `bacon test`, `clippy`, `doc`, `example` rerun
+those; `bacon mcp` and `bacon nested` restart the MCP server or the nested
+session. In a non-interactive shell use `bacon --headless <job>`.
 
 ## MCP server
 

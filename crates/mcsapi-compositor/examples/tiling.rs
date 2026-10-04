@@ -5,18 +5,25 @@
 //! $ cargo run -p mcsapi-compositor --example tiling -- foot
 //! ```
 //!
+//! For a nested instance that hot-patches as you edit this file, run it
+//! under the Dioxus CLI instead (see the crate README):
+//!
+//! ```console
+//! $ dx serve --hot-patch -p mcsapi-compositor --example tiling --features hotpatch
+//! ```
+//!
 //! Arguments are apps to launch; `clock` is the built-in app. Keys:
 //! Super+Enter launches foot, Super+C the clock, Super+J/K move focus,
 //! Super+Space promotes, Super+1…4 switch workspaces, Super+Q closes,
-//! Super+B toggles the frosted dock's blur, Super+L toggles 30 fps low power
-//! mode, Super+Escape quits.
+//! Super+B toggles the frosted dock's blur, Super+L toggles a ≤30 fps low
+//! power mode, Super+Escape quits.
 
 use std::{collections::BTreeMap, time::Duration};
 
 use mcsapi::{Desktop, Geometry, WindowId, WorkspaceId};
 use mcsapi_compositor::{
-    App, AppId, Apps, Blur, Command, Compositor, InstanceId, KeyInput, KeyRoute, Keysym, Placement,
-    Shell, Theme, egui,
+    App, AppId, Apps, Blur, Command, Compositor, Hot, InstanceId, KeyInput, KeyRoute, Keysym,
+    OutputTiming, Placement, Shell, Theme, egui,
 };
 use mcsapi_runtime::{Manifest, Runtime};
 
@@ -214,9 +221,9 @@ impl Shell for Tiling {
                 "blur {} · {}",
                 if self.blur { "on" } else { "off" },
                 if self.low_power {
-                    "low power, 30 fps"
+                    "low power, ≤30 fps"
                 } else {
-                    "60 fps"
+                    "full frame rate"
                 }
             ),
             egui::FontId::proportional(15.0),
@@ -235,11 +242,11 @@ impl Shell for Tiling {
         }]
     }
 
-    fn frame_interval(&self) -> Duration {
+    fn frame_interval(&self, timing: &OutputTiming) -> Duration {
         if self.low_power {
-            Duration::from_millis(33)
+            timing.interval_for(30)
         } else {
-            mcsapi_compositor::DEFAULT_FRAME_INTERVAL
+            timing.refresh_interval()
         }
     }
 
@@ -326,10 +333,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         blur: true,
         low_power: false,
     };
-    let mut compositor = Compositor::new(shell).title("mcsapi tiling").apps(BuiltIn {
-        runtime,
-        running: BTreeMap::new(),
-    });
+    // `Hot` lets `dx serve --hot-patch` swap in edited `Tiling` methods live.
+    let mut compositor = Compositor::new(Hot(shell))
+        .title("mcsapi tiling")
+        .apps(BuiltIn {
+            runtime,
+            running: BTreeMap::new(),
+        });
     for app in std::env::args().skip(1) {
         compositor = compositor.launch(app);
     }
