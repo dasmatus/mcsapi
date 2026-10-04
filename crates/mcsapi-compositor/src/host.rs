@@ -680,7 +680,17 @@ impl<S: Shell> Host<S> {
         }
         if let Some(events) = self.internal_events(target) {
             events.push(egui::Event::PointerMoved(pos));
-        } else if route == Route::Content(None) {
+        } else if (route == Route::Content(None)
+            || matches!(
+                route,
+                Route::Content(Some(id))
+                    if matches!(self.windows.get(&id), Some(Content::Wayland(_)))
+            ))
+            && !matches!(
+                self.content_under().and_then(|id| self.windows.get(&id)),
+                Some(Content::Internal { .. })
+            )
+        {
             focus = self.surface_under();
         }
         if let Some(pointer) = self.seat.get_pointer() {
