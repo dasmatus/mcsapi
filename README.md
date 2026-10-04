@@ -12,8 +12,10 @@ member:
 | Crate | Path | Purpose |
 | --- | --- | --- |
 | `mcsapi` | `crates/mcsapi` | Desktop policy, layouts, toolkit selection, and shell widgets (the original library; public API unchanged). |
-| `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`. Starter. |
+| `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`, plus 1:1 touchpad gestures (`gesture`). |
 | `mcsapi-runtime` | `crates/mcsapi-runtime` | Separate runtime for running apps: app registration and instance lifecycle. Starter. |
+| `mcsapi-components-gpui` | `crates/mcsapi-components-gpui` | The `mcsapi-components` library as native GPUI elements, behind its `gpui` feature. |
+| `mcsapi-gallery` | `crates/mcsapi-gallery` | Widget gallery in a GPUI window (`--features gpui`): every shell widget and component with its variants and states, under switchable themes. |
 | `x2mcsapi` | `crates/x2mcsapi` | Adapter that restyles foreign apps (web pages and Electron via an injected script, GTK 3/4, Qt Widgets) from the shell `Theme`, so they look coherent with derisk. |
 | `mcsapi-mcp` | `crates/mcsapi-mcp` | Stateless MCP server exposing desktop policy as `simulate` and `arrange` tools over Streamable HTTP. |
 | `mcsapi-compositor` | `crates/mcsapi-compositor` | Smithay Wayland compositor host: runs a desktop shell (the `Shell` trait) with Wayland clients and in-process `mcsapi-runtime` apps side by side. Nested (winit) backend. |
@@ -143,6 +145,36 @@ need functioning drivers; a machine with no usable graphics backend needs a
 separately supplied software painter or a headless control path. The example
 intentionally clears texture deltas because it does not present a window.
 
+## Touchpad gestures
+
+`mcsapi_ui::gesture` gives apps pan, pinch and rotate that follow the fingers
+1:1: the content point under the fingers stays under them, and when they lift
+mid-motion the content coasts and slows down. Resting fingers on the touchpad
+catch it again.
+
+```rust
+use mcsapi_ui::gesture::GestureTracker;
+
+// In the app's state:
+let mut view = GestureTracker::default();
+// In `App::ui`, once per frame:
+view.update(ui, ui.max_rect());
+let t = view.transform(); // draw content through t.apply(point)
+```
+
+`GestureSettings` tunes friction, the scale range, momentum and rotation.
+Hosts that see raw touchpad events (libinput) call `GestureTracker::handle`
+directly, or translate them for egui apps with `EguiBridge`.
+
+`mcsapi-compositor` routes gestures from begin to end: `Shell::gesture` may
+take a gesture at its begin (three-finger workspace swipes, say); otherwise it
+goes to the chrome, the in-process app under the pointer, or the Wayland
+client under it through `zwp_pointer_gestures_v1`. Finger scrolling reaches
+in-process apps with start and end phases, so two-finger panning gets momentum
+too. Under the nested winit backend only two-finger scrolling arrives (winit
+drops pinch and swipe events on Linux), and its end is inferred after 50 ms
+without motion; a libinput backend gets all of them through the same path.
+
 ## TypeScript bindings
 
 [`bindings/node`](bindings/node) is a native Node.js addon (napi-rs) exposing
@@ -187,12 +219,33 @@ cargo test --workspace --features mcsapi/gpui
 cargo doc --workspace --no-deps
 ```
 
-For hot reload, install [bacon](https://dystroy.org/bacon/) once with
+For a nested desktop that hot-reloads while it runs, see
+[mcsapi-compositor's README](crates/mcsapi-compositor/README.md#hot-reload-in-a-nested-instance):
+`dx serve --hot-patch` patches the running instance on save in debug builds,
+keeping its windows and state.
+
+To rerun checks on save, install [bacon](https://dystroy.org/bacon/) once with
 `cargo install --locked bacon`, then run `bacon` at the root. It reruns the
 current job whenever a workspace crate changes. Jobs from `bacon.toml`:
 `check` (default), `clippy` (`c`), `test` (`t`), `doc` (`d`), `example` (`e`),
-and `mcp` (`m`), which rebuilds and restarts the MCP server on every save. Start
-on one directly with `bacon test` or `bacon mcp`.
+`mcp` (`m`), which restarts the MCP server, and `nested` (`n`), which rebuilds
+and restarts the nested tiling session. Start on one directly with
+`bacon test` or `bacon nested`.
+
+### Nix
+
+`flake.nix` has a dev shell with the Rust toolchain, the Wayland, libinput,
+GPU and windowing libraries, bacon, cargo-llvm-cov, cargo-audit and Node.js
+for `bindings/node`. With [nix-direnv](https://github.com/nix-community/nix-direnv),
+`direnv allow` enters it on `cd` (see `.envrc`).
+
+```sh
+nix develop                # the dev shell
+nix build                  # mcsapi-mcp and x2mcsapi; also .#mcsapi-mcp, .#x2mcsapi
+nix flake check            # rustfmt, clippy, tests and docs (default and GPUI), the example
+nix fmt                    # nixfmt and rustfmt
+nix flake update nixpkgs   # bump one input by name
+```
 
 The root is a virtual manifest, so features are named per crate
 (`mcsapi/gpui`), or use `-p mcsapi --features gpui`.

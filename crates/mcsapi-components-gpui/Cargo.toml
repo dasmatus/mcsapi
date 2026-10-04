@@ -1,0 +1,20 @@
+[package]
+name = "mcsapi-components-gpui"
+description = "The mcsapi-components library as native GPUI elements"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mcsapi-components.workspace = true
+mcsapi-ui.workspace = true
+gpui = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+unicode-segmentation = { version = "1", optional = true }
+
+[features]
+# Everything in this crate needs GPUI, which needs Wayland and Vulkan system
+# libraries; off by default like mcsapi's own `gpui` feature.
+gpui = ["dep:gpui", "dep:libc", "dep:unicode-segmentation", "mcsapi-ui/gpui"]

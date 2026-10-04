@@ -70,14 +70,17 @@
 
 mod blur;
 mod host;
+mod hot;
 
 use std::{fmt, time::Duration};
 
 use mcsapi::{Geometry, WindowId};
 pub use mcsapi_runtime::{AppId, InstanceId};
-pub use mcsapi_ui::{App, Theme, egui};
+pub use mcsapi_ui::{App, GestureEvent, Theme, egui};
 pub use smithay::input::keyboard::Keysym;
 use smithay::reexports::calloop::channel;
+
+pub use hot::Hot;
 
 /// Where a window is drawn this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -284,6 +287,14 @@ pub trait Shell: 'static {
         KeyRoute::Client
     }
 
+    /// A touchpad gesture. Return `true` from a begin event to take the whole
+    /// gesture (for example three-finger swipes between workspaces); its later
+    /// events then all come here and the return value is ignored. Gestures
+    /// the shell leaves go to the chrome or the content under the pointer.
+    fn gesture(&mut self, _event: &GestureEvent) -> bool {
+        false
+    }
+
     /// A client asked to change its window state.
     fn client_request(&mut self, _window: WindowId, _request: ClientRequest) {}
 
@@ -423,7 +434,11 @@ impl<S: Shell + 'static> Compositor<S> {
     }
 
     /// Runs the session until its window closes or the shell quits.
+    ///
+    /// With the `hotpatch` feature in a debug build, this also listens for
+    /// patches from `dx serve --hot-patch`; see [`Hot`].
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        hot::connect();
         host::run(self)
     }
 }
