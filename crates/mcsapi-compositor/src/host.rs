@@ -451,12 +451,20 @@ impl<S: Shell> Host<S> {
     /// Pushes placements to toplevels and the space, and syncs keyboard focus.
     fn sync(&mut self) {
         let placements = self.shell.placements();
+        let mut unmapped = false;
         for (id, content) in &self.windows {
             if let Content::Wayland(window) = content
                 && !placements.iter().any(|p| p.window == *id)
             {
+                unmapped |= self.space.elements().any(|e| e == window);
                 self.space.unmap_elem(window);
             }
+        }
+        // A window the shell takes away mid-press (a lock screen hiding
+        // everything, a workspace switch) must not keep receiving the rest
+        // of that press through the click grab.
+        if unmapped && self.route == Some(Route::Content) {
+            self.cancel_pointer_route();
         }
         for p in &placements {
             let Some(Content::Wayland(window)) = self.windows.get(&p.window) else {
@@ -503,6 +511,33 @@ impl<S: Shell> Host<S> {
             if let Some(keyboard) = self.seat.get_keyboard() {
                 keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
             }
+        }
+    }
+
+    /// Ends a press that was going to content. The rest of it goes to the
+    /// chrome; Wayland clients get a leave instead of motion and a release,
+    /// and in-process apps see the pointer go.
+    fn cancel_pointer_route(&mut self) {
+        self.route = Some(Route::Chrome);
+        for content in self.windows.values_mut() {
+            if let Content::Internal { events, .. } = content {
+                events.push(egui::Event::PointerGone);
+            }
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            let serial = SERIAL_COUNTER.next_serial();
+            let time = self.now_ms();
+            pointer.unset_grab(self, serial, time);
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: self.pointer,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(self);
         }
     }
 
