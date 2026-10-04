@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 egui.workspace = true
+mcsapi-theme.workspace = true
 gpui = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 smithay.workspace = true

@@ -1,4 +1,5 @@
-//! Design tokens derived from the shell [`Theme`].
+//! Design tokens derived from the shell [`Theme`] by the theming engine
+//! (`mcsapi-theme`), as egui colors.
 
 use egui::{Color32, CornerRadius, FontId, Stroke};
 use mcsapi_ui::Theme;
@@ -43,26 +44,16 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// Derives the tokens from `theme`.
+    /// Derives the tokens from the shell colors in `theme`, with the default
+    /// radius and destructive color.
     pub fn from_theme(theme: &Theme) -> Self {
-        let destructive = Color32::from_rgb(220, 38, 38);
-        Self {
-            background: theme.background,
-            foreground: theme.foreground,
-            card: theme.background.lerp_to_gamma(theme.surface, 0.5),
-            muted: theme.surface,
-            muted_foreground: theme.foreground.lerp_to_gamma(theme.border, 0.55),
-            primary: theme.accent,
-            primary_foreground: theme.background,
-            secondary: theme.surface,
-            hover: theme.surface.lerp_to_gamma(theme.border, 0.35),
-            destructive,
-            destructive_foreground: Color32::from_rgb(254, 242, 242),
-            border: theme.surface.lerp_to_gamma(theme.border, 0.5),
-            ring: theme.accent,
-            overlay: Color32::from_black_alpha(160),
-            radius: 6,
-        }
+        mcsapi_ui::theme::Tokens::derive(&theme.palette(), 6).into()
+    }
+
+    /// The tokens of a full theme from the theming engine, including its
+    /// radius and destructive color.
+    pub fn from_spec(theme: &mcsapi_ui::theme::Theme) -> Self {
+        theme.tokens().into()
     }
 
     /// Makes `self` the tokens every component in `ctx` draws with.
@@ -113,6 +104,29 @@ impl Tokens {
 impl Default for Tokens {
     fn default() -> Self {
         Self::from_theme(&Theme::default())
+    }
+}
+
+impl From<mcsapi_ui::theme::Tokens> for Tokens {
+    fn from(t: mcsapi_ui::theme::Tokens) -> Self {
+        let c = |c: mcsapi_ui::theme::Color| Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
+        Self {
+            background: c(t.background),
+            foreground: c(t.foreground),
+            card: c(t.card),
+            muted: c(t.muted),
+            muted_foreground: c(t.muted_foreground),
+            primary: c(t.primary),
+            primary_foreground: c(t.primary_foreground),
+            secondary: c(t.secondary),
+            hover: c(t.hover),
+            destructive: c(t.destructive),
+            destructive_foreground: c(t.destructive_foreground),
+            border: c(t.border),
+            ring: c(t.ring),
+            overlay: c(t.overlay),
+            radius: t.radius,
+        }
     }
 }
 

@@ -3,8 +3,8 @@
 use gpui::{App, Global, Hsla, Pixels, Rgba, px};
 use mcsapi_ui::Theme;
 
-/// shadcn/ui's semantic colors as GPUI [`Hsla`], derived from a shell
-/// [`Theme`] the same way as [`mcsapi_components::Tokens`].
+/// shadcn/ui's semantic colors as GPUI [`Hsla`], derived by the theming
+/// engine (`mcsapi-theme`) exactly like [`mcsapi_components::Tokens`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     /// Page background.
@@ -41,39 +41,23 @@ pub struct Tokens {
 
 impl Global for Tokens {}
 
-/// Converts an egui color to GPUI.
-pub(crate) fn hsla(color: mcsapi_ui::egui::Color32) -> Hsla {
-    let [r, g, b, a] = color.to_srgba_unmultiplied();
-    Rgba {
-        r: f32::from(r) / 255.0,
-        g: f32::from(g) / 255.0,
-        b: f32::from(b) / 255.0,
-        a: f32::from(a) / 255.0,
-    }
-    .into()
+/// Converts a theme color to GPUI.
+pub(crate) fn hsla(color: mcsapi_ui::theme::Color) -> Hsla {
+    let [r, g, b, a] = color.to_f32();
+    Rgba { r, g, b, a }.into()
 }
 
 impl Tokens {
-    /// Derives the tokens from `theme`.
+    /// Derives the tokens from the shell colors in `theme`, with the default
+    /// radius and destructive color.
     pub fn from_theme(theme: &Theme) -> Self {
-        let t = mcsapi_components::Tokens::from_theme(theme);
-        Self {
-            background: hsla(t.background),
-            foreground: hsla(t.foreground),
-            card: hsla(t.card),
-            muted: hsla(t.muted),
-            muted_foreground: hsla(t.muted_foreground),
-            primary: hsla(t.primary),
-            primary_foreground: hsla(t.primary_foreground),
-            secondary: hsla(t.secondary),
-            hover: hsla(t.hover),
-            destructive: hsla(t.destructive),
-            destructive_foreground: hsla(t.destructive_foreground),
-            border: hsla(t.border),
-            ring: hsla(t.ring),
-            overlay: hsla(t.overlay),
-            radius: px(f32::from(t.radius)),
-        }
+        mcsapi_ui::theme::Tokens::derive(&theme.palette(), 6).into()
+    }
+
+    /// The tokens of a full theme from the theming engine, including its
+    /// radius and destructive color.
+    pub fn from_spec(theme: &mcsapi_ui::theme::Theme) -> Self {
+        theme.tokens().into()
     }
 
     /// Makes `self` the tokens every component in `cx` draws with.
@@ -91,6 +75,28 @@ impl Tokens {
     /// Corner radius of cards, dialogs, and alerts.
     pub fn card_radius(&self) -> Pixels {
         self.radius * 2.0
+    }
+}
+
+impl From<mcsapi_ui::theme::Tokens> for Tokens {
+    fn from(t: mcsapi_ui::theme::Tokens) -> Self {
+        Self {
+            background: hsla(t.background),
+            foreground: hsla(t.foreground),
+            card: hsla(t.card),
+            muted: hsla(t.muted),
+            muted_foreground: hsla(t.muted_foreground),
+            primary: hsla(t.primary),
+            primary_foreground: hsla(t.primary_foreground),
+            secondary: hsla(t.secondary),
+            hover: hsla(t.hover),
+            destructive: hsla(t.destructive),
+            destructive_foreground: hsla(t.destructive_foreground),
+            border: hsla(t.border),
+            ring: hsla(t.ring),
+            overlay: hsla(t.overlay),
+            radius: px(f32::from(t.radius)),
+        }
     }
 }
 

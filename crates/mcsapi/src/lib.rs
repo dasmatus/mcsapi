@@ -26,6 +26,7 @@ pub mod widgets;
 
 pub use desktop::{Desktop, WindowId, Windows, Workspace, WorkspaceId};
 pub use layout::{Layout, Placement, Placements};
+pub use mcsapi_theme as theme;
 pub use smithay;
 pub use smithay::utils::{Logical, Rectangle};
 
