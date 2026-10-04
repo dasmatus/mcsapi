@@ -125,6 +125,14 @@ fn input(ui: &mut Ui, state: &mut super::State) {
         );
         ui.add(Checkbox::new(&mut state.reveal).label("Show"));
     });
+    row(ui, "Touch", |ui| {
+        ui.add(
+            Input::new(&mut state.name)
+                .placeholder("Your name")
+                .width(240.0)
+                .touch(true),
+        );
+    });
     disabled_row(ui, |ui| {
         ui.add(Input::new(&mut "Read only".to_owned()).width(240.0));
     });
@@ -137,6 +145,14 @@ fn textarea(ui: &mut Ui, state: &mut super::State) {
             Textarea::new(&mut state.message)
                 .placeholder("Type your message here.")
                 .rows(3),
+        );
+    });
+    row(ui, "Touch", |ui| {
+        ui.add(
+            Textarea::new(&mut state.message)
+                .placeholder("Type your message here.")
+                .rows(2)
+                .touch(true),
         );
     });
     disabled_row(ui, |ui| {
@@ -169,6 +185,13 @@ fn checkbox(ui: &mut Ui, state: &mut super::State) {
         ui.add(Checkbox::new(&mut true).label("Checked"));
         ui.add(Checkbox::new(&mut true));
     });
+    row(ui, "Touch", |ui| {
+        ui.add(
+            Checkbox::new(&mut state.terms)
+                .label("Accept terms and conditions")
+                .touch(true),
+        );
+    });
     disabled_row(ui, |ui| {
         ui.add(Checkbox::new(&mut false).label("Unchecked"));
         ui.add(Checkbox::new(&mut true).label("Checked"));
@@ -186,6 +209,9 @@ fn switch(ui: &mut Ui, state: &mut super::State) {
         ui.add(Switch::new(&mut true).label("On"));
         ui.add(Switch::new(&mut true));
     });
+    row(ui, "Touch", |ui| {
+        ui.add(Switch::new(&mut state.wifi).label("Wi-Fi").touch(true));
+    });
     disabled_row(ui, |ui| {
         ui.add(Switch::new(&mut false).label("Off"));
         ui.add(Switch::new(&mut true).label("On"));
@@ -199,6 +225,11 @@ fn radio_group(ui: &mut Ui, state: &mut super::State) {
             &mut state.density,
             &["Default", "Comfortable", "Compact"],
         ));
+    });
+    row(ui, "Touch", |ui| {
+        ui.add(
+            RadioGroup::new(&mut state.density, &["Default", "Comfortable", "Compact"]).touch(true),
+        );
     });
     disabled_row(ui, |ui| {
         ui.add(RadioGroup::new(&mut 0, &["Yes", "No"]));
@@ -219,6 +250,13 @@ fn slider(ui: &mut Ui, state: &mut super::State) {
         );
         ui.label(format!("{:.0}", state.step));
     });
+    row(ui, "Touch", |ui| {
+        ui.add(
+            Slider::new(&mut state.volume, 0.0..=1.0)
+                .width(240.0)
+                .touch(true),
+        );
+    });
     disabled_row(ui, |ui| {
         ui.add(Slider::new(&mut 0.3, 0.0..=1.0).width(240.0));
     });
@@ -234,6 +272,13 @@ fn select(ui: &mut Ui, state: &mut super::State) {
     });
     row(ui, "Selected", |ui| {
         ui.add(Select::new("timezone", &mut state.timezone, &TIMEZONES).width(220.0));
+    });
+    row(ui, "Touch", |ui| {
+        ui.add(
+            Select::new("touch", &mut state.timezone, &TIMEZONES)
+                .width(220.0)
+                .touch(true),
+        );
     });
     disabled_row(ui, |ui| {
         ui.add(Select::new("disabled", &mut Some(0), &FRUITS));

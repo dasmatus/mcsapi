@@ -208,10 +208,9 @@ struct Egui {
 
 impl Egui {
     fn new() -> Self {
-        Self {
-            ctx: egui::Context::default(),
-            painter: None,
-        }
+        let ctx = egui::Context::default();
+        mcsapi_ui::fonts::install(&ctx);
+        Self { ctx, painter: None }
     }
 }
 

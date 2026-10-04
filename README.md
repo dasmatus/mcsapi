@@ -38,7 +38,11 @@ toolkit and a compositor can use `mcsapi` without either starter crate.
   storage is used by mcsapi; upstream toolkits may use their own collections.
 - Optional GPUI integration and an always-available egui fallback context.
 - Matching native workspace bars with shared theme colors, rounded surfaces,
-  active labels, and keyboard activation.
+  active labels, and keyboard activation; the egui bar can also show live
+  thumbnails of each workspace's windows (`egui_workspace_previews`).
+- Bundled typefaces in `mcsapi-ui`: NotoSans Nerd Font Propo for text and
+  Cousine Nerd Font for monospace, covering Central European Latin and the
+  Nerd Font icons (see `crates/mcsapi-ui/fonts/README.md`).
 
 ## Quick start
 

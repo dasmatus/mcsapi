@@ -38,6 +38,13 @@ pub struct State {
     shell: shell::State,
 }
 
+impl State {
+    /// Where [`mcsapi_components::Toaster`] stacks the gallery's toasts.
+    pub(crate) fn toaster_position(&self) -> mcsapi_components::ToasterPosition {
+        self.overlays.toaster_position()
+    }
+}
+
 /// Draws one labeled row of a specimen: a muted caption, then `content`
 /// laid out left to right.
 fn row<R>(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui) -> R) -> R {

@@ -1,4 +1,8 @@
 //! Form controls: input, textarea, checkbox, switch, radio group, slider, select.
+//!
+//! Every control has a `touch` option for phones and tablets: 44 px tap
+//! targets and 16 px text (which also stops mobile browsers zooming in on a
+//! focused field when the controls are mirrored on the web).
 
 use std::ops::RangeInclusive;
 
@@ -9,20 +13,27 @@ use egui::{
 
 use crate::{IntoChanged as _, Tokens, paint_focus_ring};
 
-fn text_frame(tokens: &Tokens) -> Frame {
+fn text_frame(tokens: &Tokens, touch: bool) -> Frame {
     Frame::new()
         .fill(Color32::TRANSPARENT)
         .stroke(tokens.border_stroke())
         .corner_radius(tokens.control_radius())
-        .inner_margin(Margin::symmetric(12, 8))
+        .inner_margin(if touch {
+            Margin::symmetric(14, 11)
+        } else {
+            Margin::symmetric(12, 8)
+        })
 }
 
-fn add_text_edit(ui: &mut Ui, edit: TextEdit<'_>, tokens: &Tokens) -> Response {
-    let response = ui.add(
-        edit.frame(text_frame(tokens))
-            .text_color(tokens.foreground)
-            .font(tokens.body_font()),
-    );
+fn add_text_edit(ui: &mut Ui, edit: TextEdit<'_>, tokens: &Tokens, touch: bool) -> Response {
+    let mut edit = edit
+        .frame(text_frame(tokens, touch))
+        .text_color(tokens.foreground)
+        .font(tokens.control_font(touch));
+    if touch {
+        edit = edit.min_size(vec2(0.0, Tokens::TOUCH_TARGET));
+    }
+    let response = ui.add(edit);
     if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect,
@@ -41,6 +52,7 @@ pub struct Input<'a> {
     placeholder: Option<String>,
     password: bool,
     width: Option<f32>,
+    touch: bool,
 }
 
 impl<'a> Input<'a> {
@@ -51,7 +63,14 @@ impl<'a> Input<'a> {
             placeholder: None,
             password: false,
             width: None,
+            touch: false,
         }
+    }
+
+    /// Sizes the field for touch: 44 px tall with 16 px text.
+    pub fn touch(mut self, touch: bool) -> Self {
+        self.touch = touch;
+        self
     }
 
     /// Sets the hint shown while the field is empty.
@@ -82,7 +101,7 @@ impl Widget for Input<'_> {
         if let Some(placeholder) = self.placeholder {
             edit = edit.hint_text(RichText::new(placeholder).color(tokens.muted_foreground));
         }
-        add_text_edit(ui, edit, &tokens)
+        add_text_edit(ui, edit, &tokens, self.touch)
     }
 }
 
@@ -92,6 +111,7 @@ pub struct Textarea<'a> {
     text: &'a mut String,
     placeholder: Option<String>,
     rows: usize,
+    touch: bool,
 }
 
 impl<'a> Textarea<'a> {
@@ -101,7 +121,14 @@ impl<'a> Textarea<'a> {
             text,
             placeholder: None,
             rows: 3,
+            touch: false,
         }
+    }
+
+    /// Sizes the text area for touch: 16 px text and roomier padding.
+    pub fn touch(mut self, touch: bool) -> Self {
+        self.touch = touch;
+        self
     }
 
     /// Sets the hint shown while the field is empty.
@@ -126,23 +153,33 @@ impl Widget for Textarea<'_> {
         if let Some(placeholder) = self.placeholder {
             edit = edit.hint_text(RichText::new(placeholder).color(tokens.muted_foreground));
         }
-        add_text_edit(ui, edit, &tokens)
+        add_text_edit(ui, edit, &tokens, self.touch)
     }
 }
 
 /// Lays out an optional text label right of a `control_size` control and
-/// returns the control's rect and the shared response.
-fn labeled_control(ui: &mut Ui, control_size: Vec2, label: Option<&str>) -> (egui::Rect, Response) {
+/// returns the control's rect and the shared response. Touch rows are at
+/// least 44 px tall, with a wider gap and 16 px text.
+fn labeled_control(
+    ui: &mut Ui,
+    control_size: Vec2,
+    label: Option<&str>,
+    touch: bool,
+) -> (egui::Rect, Response) {
     let tokens = Tokens::current(ui.ctx());
     let galley = label.map(|text| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), tokens.body_font(), Color32::PLACEHOLDER)
+        ui.painter().layout_no_wrap(
+            text.to_owned(),
+            tokens.control_font(touch),
+            Color32::PLACEHOLDER,
+        )
     });
-    let gap = 8.0;
+    let gap = if touch { 12.0 } else { 8.0 };
     let width = control_size.x + galley.as_ref().map_or(0.0, |g| gap + g.size().x);
     let height = control_size
         .y
-        .max(galley.as_ref().map_or(0.0, |g| g.size().y));
+        .max(galley.as_ref().map_or(0.0, |g| g.size().y))
+        .max(if touch { Tokens::TOUCH_TARGET } else { 0.0 });
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     let control = Align2::LEFT_CENTER.anchor_size(rect.left_center(), control_size);
     if let Some(galley) = galley {
@@ -160,6 +197,7 @@ fn labeled_control(ui: &mut Ui, control_size: Vec2, label: Option<&str>) -> (egu
 pub struct Checkbox<'a> {
     checked: &'a mut bool,
     label: Option<String>,
+    touch: bool,
 }
 
 impl<'a> Checkbox<'a> {
@@ -168,7 +206,14 @@ impl<'a> Checkbox<'a> {
         Self {
             checked,
             label: None,
+            touch: false,
         }
+    }
+
+    /// Sizes the checkbox for touch: a 20 px box in a 44 px row.
+    pub fn touch(mut self, touch: bool) -> Self {
+        self.touch = touch;
+        self
     }
 
     /// Sets the text right of the box; clicking it toggles the box too.
@@ -181,7 +226,9 @@ impl<'a> Checkbox<'a> {
 impl Widget for Checkbox<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let tokens = Tokens::current(ui.ctx());
-        let (control, mut response) = labeled_control(ui, Vec2::splat(16.0), self.label.as_deref());
+        let side = if self.touch { 20.0 } else { 16.0 };
+        let (control, mut response) =
+            labeled_control(ui, Vec2::splat(side), self.label.as_deref(), self.touch);
         if response.clicked() {
             *self.checked = !*self.checked;
             response.mark_changed();
@@ -194,11 +241,12 @@ impl Widget for Checkbox<'_> {
         if checked {
             painter.rect_filled(control, radius, tokens.primary);
             let c = control.center();
+            let k = side / 16.0;
             painter.line(
                 vec![
-                    c + vec2(-4.0, 0.0),
-                    c + vec2(-1.0, 3.0),
-                    c + vec2(4.5, -3.5),
+                    c + vec2(-4.0, 0.0) * k,
+                    c + vec2(-1.0, 3.0) * k,
+                    c + vec2(4.5, -3.5) * k,
                 ],
                 Stroke::new(2.0, tokens.primary_foreground),
             );
@@ -220,12 +268,23 @@ impl Widget for Checkbox<'_> {
 pub struct Switch<'a> {
     on: &'a mut bool,
     label: Option<String>,
+    touch: bool,
 }
 
 impl<'a> Switch<'a> {
     /// A switch bound to `on`, with no label.
     pub fn new(on: &'a mut bool) -> Self {
-        Self { on, label: None }
+        Self {
+            on,
+            label: None,
+            touch: false,
+        }
+    }
+
+    /// Sizes the switch for touch: a 44×24 track in a 44 px row.
+    pub fn touch(mut self, touch: bool) -> Self {
+        self.touch = touch;
+        self
     }
 
     /// Sets the text right of the switch.
@@ -238,7 +297,12 @@ impl<'a> Switch<'a> {
 impl Widget for Switch<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let tokens = Tokens::current(ui.ctx());
-        let (track, mut response) = labeled_control(ui, vec2(32.0, 18.0), self.label.as_deref());
+        let size = if self.touch {
+            vec2(44.0, 24.0)
+        } else {
+            vec2(32.0, 18.0)
+        };
+        let (track, mut response) = labeled_control(ui, size, self.label.as_deref(), self.touch);
         if response.clicked() {
             *self.on = !*self.on;
             response.mark_changed();
@@ -266,12 +330,23 @@ impl Widget for Switch<'_> {
 pub struct RadioGroup<'a, T: AsRef<str>> {
     selected: &'a mut usize,
     options: &'a [T],
+    touch: bool,
 }
 
 impl<'a, T: AsRef<str>> RadioGroup<'a, T> {
     /// A group of `options` with the selected index in `selected`.
     pub fn new(selected: &'a mut usize, options: &'a [T]) -> Self {
-        Self { selected, options }
+        Self {
+            selected,
+            options,
+            touch: false,
+        }
+    }
+
+    /// Sizes the options for touch: 20 px circles in 44 px rows.
+    pub fn touch(mut self, touch: bool) -> Self {
+        self.touch = touch;
+        self
     }
 }
 
@@ -279,11 +354,14 @@ impl<T: AsRef<str>> Widget for RadioGroup<'_, T> {
     fn ui(self, ui: &mut Ui) -> Response {
         let tokens = Tokens::current(ui.ctx());
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 12.0;
+            // Touch rows are already 44 px tall, so they need no extra gap.
+            ui.spacing_mut().item_spacing.y = if self.touch { 0.0 } else { 12.0 };
+            let side = if self.touch { 20.0 } else { 16.0 };
             let mut changed = false;
             for (index, option) in self.options.iter().enumerate() {
                 let text = option.as_ref();
-                let (control, response) = labeled_control(ui, Vec2::splat(16.0), Some(text));
+                let (control, response) =
+                    labeled_control(ui, Vec2::splat(side), Some(text), self.touch);
                 if response.clicked() && *self.selected != index {
                     *self.selected = index;
                     changed = true;
@@ -292,9 +370,13 @@ impl<T: AsRef<str>> Widget for RadioGroup<'_, T> {
                 response
                     .widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, on, text));
                 let painter = ui.painter();
-                painter.circle_stroke(control.center(), 7.5, Stroke::new(1.0, tokens.primary));
+                painter.circle_stroke(
+                    control.center(),
+                    side / 2.0 - 0.5,
+                    Stroke::new(1.0, tokens.primary),
+                );
                 if on {
-                    painter.circle_filled(control.center(), 4.0, tokens.primary);
+                    painter.circle_filled(control.center(), side / 4.0, tokens.primary);
                 }
                 paint_focus_ring(ui, &response, control, CornerRadius::same(u8::MAX));
             }
@@ -311,6 +393,7 @@ pub struct Slider<'a> {
     range: RangeInclusive<f32>,
     step: Option<f32>,
     width: Option<f32>,
+    touch: bool,
 }
 
 impl<'a> Slider<'a> {
@@ -321,7 +404,14 @@ impl<'a> Slider<'a> {
             range,
             step: None,
             width: None,
+            touch: false,
         }
+    }
+
+    /// Sizes the slider for touch: a 24 px thumb on an 8 px track, 44 px tall.
+    pub fn touch(mut self, touch: bool) -> Self {
+        self.touch = touch;
+        self
     }
 
     /// Snaps the value to multiples of `step` from the range start.
@@ -342,9 +432,13 @@ impl Widget for Slider<'_> {
         let tokens = Tokens::current(ui.ctx());
         let (start, end) = (*self.range.start(), *self.range.end());
         let width = self.width.unwrap_or_else(|| ui.available_width());
+        let (height, thumb_radius, track_half) = if self.touch {
+            (Tokens::TOUCH_TARGET, 12.0, 4.0)
+        } else {
+            (20.0, 8.0, 3.0)
+        };
         let (rect, mut response) =
-            ui.allocate_exact_size(vec2(width, 20.0), Sense::click_and_drag());
-        let thumb_radius = 8.0;
+            ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
         let track_x = (rect.left() + thumb_radius)..=(rect.right() - thumb_radius);
 
         let mut new_value = *self.value;
@@ -385,7 +479,7 @@ impl Widget for Slider<'_> {
         let painter = ui.painter();
         let track = egui::Rect::from_x_y_ranges(
             rect.x_range(),
-            (rect.center().y - 3.0)..=(rect.center().y + 3.0),
+            (rect.center().y - track_half)..=(rect.center().y + track_half),
         );
         let radius = CornerRadius::same(u8::MAX);
         painter.rect_filled(track, radius, tokens.muted);
@@ -415,6 +509,7 @@ pub struct Select<'a, T: AsRef<str>> {
     options: &'a [T],
     placeholder: String,
     width: f32,
+    touch: bool,
 }
 
 impl<'a, T: AsRef<str>> Select<'a, T> {
@@ -432,7 +527,14 @@ impl<'a, T: AsRef<str>> Select<'a, T> {
             options,
             placeholder: "Select…".to_owned(),
             width: 180.0,
+            touch: false,
         }
+    }
+
+    /// Sizes the trigger and options for touch: 44 px rows with 16 px text.
+    pub fn touch(mut self, touch: bool) -> Self {
+        self.touch = touch;
+        self
     }
 
     /// Sets the text shown while nothing is selected.
@@ -475,10 +577,20 @@ impl<T: AsRef<str>> Widget for Select<'_, T> {
                 visuals.window_stroke = tokens.border_stroke();
                 visuals.selection.bg_fill = tokens.hover;
                 visuals.selection.stroke = Stroke::new(1.0, tokens.foreground);
+                let touch = self.touch;
+                if touch {
+                    let style = ui.style_mut();
+                    style.override_font_id = Some(tokens.control_font(true));
+                    style.spacing.button_padding = vec2(14.0, 11.0);
+                    style.spacing.interact_size.y = Tokens::TOUCH_TARGET;
+                }
                 egui::ComboBox::from_id_salt(self.id_salt)
                     .width(self.width)
                     .selected_text(RichText::new(text).color(color))
                     .show_ui(ui, |ui| {
+                        if touch {
+                            ui.spacing_mut().button_padding = vec2(12.0, 12.0);
+                        }
                         for (index, option) in self.options.iter().enumerate() {
                             let on = *self.selected == Some(index);
                             if ui.selectable_label(on, option.as_ref()).clicked() && !on {

@@ -1,7 +1,7 @@
 use egui::Ui;
 use mcsapi_components::{
-    AlertDialog, AlertDialogAction, Button, ButtonVariant, Dialog, Input, Label, Tokens, toast,
-    toasts, tooltip, typography,
+    AlertDialog, AlertDialogAction, Button, ButtonVariant, Dialog, Input, Label, ToasterPosition,
+    ToggleGroup, Tokens, toast, toasts, tooltip, typography,
 };
 
 use super::row;
@@ -37,7 +37,7 @@ pub(super) const SPECIMENS: &[Specimen] = &[
         category: Category::Overlays,
         source: "shadcn/ui (Sonner)",
         summary: "A brief notice in the corner that dismisses itself.",
-        api: &["toast", "toasts", "Toast", "Toaster"],
+        api: &["toast", "toasts", "Toast", "Toaster", "ToasterPosition"],
         show: toast_demo,
     },
 ];
@@ -48,6 +48,22 @@ pub(super) struct State {
     delete_open: bool,
     publish_open: bool,
     answer: Option<String>,
+    toaster: Option<usize>,
+}
+
+const TOASTER_POSITIONS: [(&str, ToasterPosition); 3] = [
+    ("Top right", ToasterPosition::TopRight),
+    ("Top center", ToasterPosition::TopCenter),
+    ("Top left", ToasterPosition::TopLeft),
+];
+
+impl State {
+    /// Where the gallery's Toaster stacks toasts, picked in the Toast specimen.
+    pub(super) fn toaster_position(&self) -> ToasterPosition {
+        self.toaster
+            .and_then(|index| TOASTER_POSITIONS.get(index))
+            .map_or_else(ToasterPosition::default, |(_, position)| *position)
+    }
 }
 
 impl Default for State {
@@ -58,6 +74,7 @@ impl Default for State {
             delete_open: false,
             publish_open: false,
             answer: None,
+            toaster: Some(0),
         }
     }
 }
@@ -153,8 +170,12 @@ fn tooltips(ui: &mut Ui, _: &mut super::State) {
     });
 }
 
-fn toast_demo(ui: &mut Ui, _: &mut super::State) {
+fn toast_demo(ui: &mut Ui, state: &mut super::State) {
     let tokens = Tokens::current(ui.ctx());
+    row(ui, "Position", |ui| {
+        let labels = TOASTER_POSITIONS.map(|(label, _)| label);
+        ui.add(ToggleGroup::new(&mut state.overlays.toaster, &labels));
+    });
     row(ui, "Show", |ui| {
         if ui
             .add(Button::new("Title only").variant(ButtonVariant::Outline))

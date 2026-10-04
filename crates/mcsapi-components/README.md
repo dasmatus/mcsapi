@@ -54,7 +54,7 @@ are reimplementations in Rust and egui, not copies of the React source.
 | Separator | `Separator` | |
 | Skeleton | `Skeleton` | |
 | Slider | `Slider` | Pending: React Bits Elastic Slider |
-| Sonner (toast) | `toast`, `Toaster` | |
+| Sonner (toast) | `toast`, `Toaster`, `ToasterPosition` | Stacks at the top (top-right by default), newest first |
 | Spinner | `Spinner` | |
 | Switch | `Switch` | |
 | Table | `Table` | |
@@ -64,6 +64,9 @@ are reimplementations in Rust and egui, not copies of the React source.
 | Toggle Group | `ToggleGroup` (single select) | |
 | Tooltip | `tooltip` | Pending: Aceternity Animated Tooltip |
 | Typography | `typography::*`, `blockquote` | |
+
+Input, Textarea, Checkbox, Switch, RadioGroup, Slider and Select take
+`.touch(true)` for phones and tablets: 44 px tap targets and 16 px text.
 
 ## Not ported yet (shadcn/ui)
 

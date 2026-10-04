@@ -8,6 +8,9 @@
 //! [`gesture`] adds 1:1 touchpad gestures: pan, pinch and rotate content that
 //! follows the fingers exactly and coasts when they lift.
 //!
+//! [`fonts`] supplies the desktop's typefaces: NotoSans Nerd Font Propo for
+//! text and Cousine Nerd Font for monospace, both with Nerd Font icons.
+//!
 //! ```
 //! use mcsapi_ui::{App, Theme, egui};
 //!
@@ -33,6 +36,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod fonts;
 pub mod gesture;
 
 pub use egui;
@@ -51,6 +55,8 @@ pub trait App {
 
 /// Runs one egui frame of `app` inside a surface filled with the theme background.
 ///
+/// Installs the desktop [`fonts`] in `context` on the first call.
+///
 /// The caller paints the returned shapes, applies texture deltas, handles
 /// platform output, and honors requested repaints. egui panics in debug builds
 /// if texture deltas are dropped unapplied; call `textures_delta.clear()` when
@@ -61,6 +67,7 @@ pub fn run_frame(
     input: egui::RawInput,
     theme: &Theme,
 ) -> egui::FullOutput {
+    fonts::install(context);
     context.run_ui(input, |ui| {
         egui::Frame::new()
             .fill(theme.background)

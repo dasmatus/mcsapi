@@ -329,7 +329,7 @@ impl App for Gallery {
                     .frame(egui::Frame::new())
                     .show(ui, |ui| self.content(ui, &tokens));
             });
-        Toaster::show(ui.ctx());
+        Toaster::show_at(ui.ctx(), self.state.toaster_position());
     }
 }
 

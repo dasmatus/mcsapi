@@ -108,6 +108,21 @@ impl Tokens {
     pub fn small_font(&self) -> FontId {
         FontId::proportional(12.0)
     }
+
+    /// Text size of touch controls; 16 px also keeps phones from zooming.
+    pub const TOUCH_TEXT: f32 = 16.0;
+
+    /// Minimum height of touch controls' tap targets.
+    pub const TOUCH_TARGET: f32 = 44.0;
+
+    /// Body font, or the larger touch font when `touch` is set.
+    pub fn control_font(&self, touch: bool) -> FontId {
+        if touch {
+            FontId::proportional(Self::TOUCH_TEXT)
+        } else {
+            self.body_font()
+        }
+    }
 }
 
 impl Default for Tokens {

@@ -253,12 +253,42 @@ pub fn toasts(ctx: &Context) -> Vec<Toast> {
         .0
 }
 
-/// shadcn's Toaster (Sonner): draws queued toasts in the bottom-right corner.
+/// Where a [`Toaster`] stacks its toasts. derisk keeps notifications at the
+/// top of the screen, unlike Sonner's bottom-right default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToasterPosition {
+    /// The top-right corner.
+    #[default]
+    TopRight,
+    /// Centered along the top edge.
+    TopCenter,
+    /// The top-left corner.
+    TopLeft,
+}
+
+impl ToasterPosition {
+    fn anchor(self) -> (Align2, egui::Vec2) {
+        match self {
+            Self::TopRight => (Align2::RIGHT_TOP, vec2(-16.0, 16.0)),
+            Self::TopCenter => (Align2::CENTER_TOP, vec2(0.0, 16.0)),
+            Self::TopLeft => (Align2::LEFT_TOP, vec2(16.0, 16.0)),
+        }
+    }
+}
+
+/// shadcn's Toaster (Sonner): draws queued toasts stacked at the top of the
+/// screen, newest first.
 pub struct Toaster;
 
 impl Toaster {
-    /// Draws the queued toasts and drops the expired ones. Call once per frame.
+    /// Draws the queued toasts in the top-right corner and drops the expired
+    /// ones. Call once per frame.
     pub fn show(ctx: &Context) {
+        Self::show_at(ctx, ToasterPosition::default());
+    }
+
+    /// Like [`Toaster::show`], stacking the toasts at `position`.
+    pub fn show_at(ctx: &Context, position: ToasterPosition) {
         let now = ctx.input(|input| input.time);
         let mut queue = ctx.data_mut(|data| {
             let queue = data.get_temp_mut_or_default::<ToastQueue>(queue_id());
@@ -270,10 +300,13 @@ impl Toaster {
         }
         let tokens = Tokens::current(ctx);
         let mut dismissed = None;
+        let (align, offset) = position.anchor();
         egui::Area::new(Id::new("mcsapi_components::toaster"))
             .order(Order::Tooltip)
-            .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0))
+            .anchor(align, offset)
             .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                // Newest on top, so fresh toasts appear under the screen edge.
                 for (index, toast) in queue.iter().enumerate().rev() {
                     let response = Frame::new()
                         .fill(tokens.background)
@@ -284,8 +317,7 @@ impl Toaster {
                             ui.set_width(320.0);
                             ui.label(
                                 RichText::new(&toast.title)
-                                    .font(tokens.body_font())
-                                    .strong()
+                                    .font(mcsapi_ui::fonts::strong(ui.ctx(), 14.0))
                                     .color(tokens.foreground),
                             );
                             if let Some(description) = &toast.description {
