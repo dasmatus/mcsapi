@@ -244,7 +244,7 @@ pub const MAX_ITEMS: usize = 10_000;
 
 fn within_limit(what: &str, len: usize) -> Result<(), String> {
     if len > MAX_ITEMS {
-        Err(format!("{len} {what} is more than the {MAX_ITEMS} allowed"))
+        Err(format!("too many {what}: {len}, the limit is {MAX_ITEMS}"))
     } else {
         Ok(())
     }

@@ -16,20 +16,35 @@ const BOUNDS: Rect = Rect {
 #[test]
 fn oversized_requests_are_refused() {
     let many = mcsapi_mcp::MAX_ITEMS + 1;
+    // The exact message, so an error from later in the call (a layout out of
+    // space, a duplicate ID) cannot pass for the limit.
+    let refused = |what: &str| {
+        format!(
+            "too many {what}: {many}, the limit is {}",
+            mcsapi_mcp::MAX_ITEMS
+        )
+    };
+    let error = simulate(&SimulateRequest {
+        workspaces: (1..=many as u64).collect(),
+        operations: Vec::new(),
+        bounds: None,
+    })
+    .unwrap_err();
+    assert_eq!(error, refused("workspaces"));
     let error = simulate(&SimulateRequest {
         workspaces: vec![1],
         operations: vec![Operation::FocusNext; many],
         bounds: None,
     })
     .unwrap_err();
-    assert!(error.contains("operations"), "{error}");
+    assert_eq!(error, refused("operations"));
     let error = arrange(&ArrangeRequest {
-        layout: LayoutName::Tall,
+        layout: LayoutName::Monocle,
         bounds: BOUNDS,
         windows: (1..=many as u64).collect(),
     })
     .unwrap_err();
-    assert!(error.contains("windows"), "{error}");
+    assert_eq!(error, refused("windows"));
 }
 
 #[test]
