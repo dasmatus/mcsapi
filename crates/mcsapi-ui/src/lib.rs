@@ -37,6 +37,7 @@ pub mod gesture;
 
 pub use egui;
 pub use gesture::{GestureEvent, GestureTracker, Transform};
+pub use mcsapi::theme;
 pub use mcsapi::toolkit::{FallbackReason, GraphicsCapabilities, Toolkit};
 pub use mcsapi::widgets::Theme;
 

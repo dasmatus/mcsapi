@@ -6,7 +6,14 @@ use std::process::{Command, ExitCode};
 use x2mcsapi::Style;
 
 const USAGE: &str = "\
-Usage:
+Usage: x2mcsapi [--theme ID|FILE] COMMAND
+
+  --theme ID|FILE
+      Style from this theme: a theme file, or the ID of one under
+      derisk/themes in an XDG data directory, or a built-in theme
+      (derisk-dark, derisk-light, derisk-high-contrast). Default: derisk-dark.
+
+Commands:
   x2mcsapi print <css|script|userscript|gtk3|gtk4|qt>
       Print one generated target to standard output.
   x2mcsapi install [DIR]
@@ -28,9 +35,41 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Loads `--theme`'s argument: a path when it names an existing file,
+/// otherwise a theme ID.
+fn load_theme(name: &str) -> Result<Style, String> {
+    let library = mcsapi_theme::Library::xdg("derisk");
+    let path = std::path::Path::new(name);
+    let parsed = if path.is_file() {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{name}: {e}"))?;
+        mcsapi_theme::Theme::parse(&text, |id| library.load(id).ok().map(|p| p.theme))
+            .map_err(|e| format!("{name}:{e}"))?
+    } else {
+        library.load(name).map_err(|e| e.to_string())?
+    };
+    for warning in &parsed.warnings {
+        eprintln!("x2mcsapi: {name}:{warning}");
+    }
+    Ok(Style::from_spec(&parsed.theme))
+}
+
 fn main() -> ExitCode {
-    let style = Style::default();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let style = if args.first().map(String::as_str) == Some("--theme") {
+        let Some(name) = args.get(1).cloned() else {
+            return fail("--theme needs a theme ID or file");
+        };
+        args.drain(..2);
+        match load_theme(&name) {
+            Ok(style) => style,
+            Err(error) => {
+                eprintln!("x2mcsapi: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        Style::default()
+    };
     match args.first().map(String::as_str) {
         Some("print") => {
             let text = match args.get(1).map(String::as_str) {

@@ -95,6 +95,10 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::set_title, &mut self.0, window, title)
     }
 
+    fn set_app_id(&mut self, window: WindowId, app_id: &str) {
+        hot!(S::set_app_id, &mut self.0, window, app_id)
+    }
+
     fn focus(&mut self, window: WindowId) {
         hot!(S::focus, &mut self.0, window)
     }
@@ -161,6 +165,10 @@ impl<S: Shell> Shell for Hot<S> {
 
     fn spawn_argv(&mut self, app: &str) -> Vec<String> {
         hot!(S::spawn_argv, &mut self.0, app)
+    }
+
+    fn set_reserved(&mut self, reserved: crate::Reserved) {
+        hot!(S::set_reserved, &mut self.0, reserved)
     }
 
     fn take_commands(&mut self) -> Vec<Command> {
