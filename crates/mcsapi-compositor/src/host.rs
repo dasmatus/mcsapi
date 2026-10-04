@@ -275,6 +275,8 @@ pub(crate) struct Host<S: Shell> {
     gl: Option<Arc<glow::Context>>,
     retired: Vec<egui_glow::Painter>,
     blurrer: Option<blur::Blurrer>,
+    /// Set once creating the blurrer failed, so it isn't retried every frame.
+    blur_unavailable: bool,
     vrr: bool,
     /// Refresh rate of the monitor showing the session window.
     refresh_mhz: u32,
@@ -411,6 +413,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         gl: None,
         retired: Vec::new(),
         blurrer: None,
+        blur_unavailable: false,
         vrr,
         refresh_mhz: 60_000,
         timing_checked: None,
@@ -1531,11 +1534,14 @@ impl<S: Shell> Host<S> {
             }
         }
         if !blurs.is_empty() {
-            if self.blurrer.is_none() {
+            if self.blurrer.is_none() && !self.blur_unavailable {
                 // SAFETY: the frame's context is current while it is open.
                 match unsafe { blur::Blurrer::new(&gl) } {
                     Ok(b) => self.blurrer = Some(b),
-                    Err(e) => eprintln!("mcsapi-compositor: blur unavailable: {e}"),
+                    Err(e) => {
+                        self.blur_unavailable = true;
+                        eprintln!("mcsapi-compositor: blur unavailable: {e}");
+                    }
                 }
             }
             if let Some(blurrer) = &mut self.blurrer {
