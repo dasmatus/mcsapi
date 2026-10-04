@@ -13,4 +13,5 @@ glow = "0.17"
 mcsapi.workspace = true
 mcsapi-runtime.workspace = true
 mcsapi-ui.workspace = true
+libc.workspace = true
 smithay = { workspace = true, features = ["backend_winit", "desktop", "renderer_gl"] }

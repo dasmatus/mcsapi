@@ -5,10 +5,13 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     fs::File,
-    io::Write,
-    os::fd::OwnedFd,
+    io,
+    os::fd::{AsRawFd, OwnedFd},
     process::{Child, Command as Process},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -91,6 +94,104 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
+const MAX_SELECTION_TRANSFERS: usize = 4;
+const SELECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+static ACTIVE_SELECTION_TRANSFERS: AtomicUsize = AtomicUsize::new(0);
+
+struct SelectionTransferGuard;
+
+impl SelectionTransferGuard {
+    fn acquire() -> Option<Self> {
+        let mut active = ACTIVE_SELECTION_TRANSFERS.load(Ordering::Relaxed);
+        loop {
+            if active >= MAX_SELECTION_TRANSFERS {
+                return None;
+            }
+            match ACTIVE_SELECTION_TRANSFERS.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(Self),
+                Err(current) => active = current,
+            }
+        }
+    }
+}
+
+impl Drop for SelectionTransferGuard {
+    fn drop(&mut self) {
+        ACTIVE_SELECTION_TRANSFERS.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn write_selection(fd: OwnedFd, text: &[u8], timeout: Duration) -> io::Result<()> {
+    let file = File::from(fd);
+    let raw_fd = file.as_raw_fd();
+    // SAFETY: fcntl is called with a valid owned file descriptor.
+    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fcntl is called with a valid owned file descriptor and its existing flags.
+    if unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        // SAFETY: the byte slice is valid for the duration of this write call.
+        let written = unsafe { libc::write(raw_fd, remaining.as_ptr().cast(), remaining.len()) };
+        if written > 0 {
+            remaining = &remaining[written as usize..];
+            continue;
+        }
+        if written == 0 {
+            return Err(io::Error::from(io::ErrorKind::WriteZero));
+        }
+
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if error.kind() != io::ErrorKind::WouldBlock {
+            return Err(error);
+        }
+
+        let remaining_time = deadline.saturating_duration_since(Instant::now());
+        if remaining_time.is_zero() {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        let timeout_ms = remaining_time.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let mut descriptor = libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: descriptor points to one initialized pollfd and the fd remains owned.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if ready == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if ready == 0 {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        }
+    }
+    Ok(())
+}
 
 /// An egui context plus its GL painter (created once GL is available).
 struct Egui {
@@ -1396,11 +1497,19 @@ impl<S: Shell + 'static> SelectionHandler for Host<S> {
             mime_type.as_str(),
             "text/plain" | "text/plain;charset=utf-8" | "UTF8_STRING"
         ) {
+            let Some(guard) = SelectionTransferGuard::acquire() else {
+                return;
+            };
             let text = user_data.clone();
-            std::thread::spawn(move || {
-                let mut file = File::from(fd);
-                let _ = file.write_all(text.as_bytes());
-            });
+            if let Err(error) = std::thread::Builder::new()
+                .name("mcsapi-selection-send".into())
+                .spawn(move || {
+                    let _guard = guard;
+                    let _ = write_selection(fd, text.as_bytes(), SELECTION_WRITE_TIMEOUT);
+                })
+            {
+                eprintln!("mcsapi-compositor: cannot start clipboard transfer: {error}");
+            }
         }
     }
 }
@@ -1414,6 +1523,7 @@ impl<S: Shell + 'static> DataDeviceHandler for Host<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::FromRawFd;
 
     struct TestShell {
         keys: Vec<bool>,
@@ -1465,6 +1575,31 @@ mod tests {
             KeyRoute::Consume
         );
         assert_eq!(shell.keys, [true, false]);
+    }
+
+    #[test]
+    fn clipboard_transfers_are_bounded() {
+        let guards: Vec<_> = (0..MAX_SELECTION_TRANSFERS)
+            .map(|_| SelectionTransferGuard::acquire().unwrap())
+            .collect();
+        assert!(SelectionTransferGuard::acquire().is_none());
+        drop(guards);
+        assert!(SelectionTransferGuard::acquire().is_some());
+    }
+
+    #[test]
+    fn stalled_clipboard_write_times_out() {
+        let mut fds = [0; 2];
+        // SAFETY: fds points to two writable integers for pipe to initialize.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: pipe initialized both descriptors and ownership is transferred exactly once.
+        let _read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        // SAFETY: pipe initialized both descriptors and ownership is transferred exactly once.
+        let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+        let error =
+            write_selection(write, &vec![0; 1024 * 1024], Duration::from_millis(20)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 }
 

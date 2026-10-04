@@ -3577,6 +3577,7 @@ version = "0.1.0"
 dependencies = [
  "egui_glow",
  "glow 0.17.0",
+ "libc",
  "mcsapi",
  "mcsapi-runtime",
  "mcsapi-ui",
