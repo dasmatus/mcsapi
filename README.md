@@ -1,8 +1,8 @@
 # mcsapi
 
 A small Rust scaffold for xmonad-like desktop policy on
-[Smithay](https://smithay.github.io/). It is a library, **not yet a runnable
-Wayland compositor**.
+[Smithay](https://smithay.github.io/). `mcsapi-compositor` turns it into a runnable
+(nested) Wayland compositor; see `cargo run -p mcsapi-compositor --example tiling`.
 
 ## Workspace layout
 
@@ -18,6 +18,7 @@ member:
 | `mcsapi-gallery` | `crates/mcsapi-gallery` | Widget gallery in a GPUI window (`--features gpui`): every shell widget and component with its variants and states, under switchable themes. |
 | `x2mcsapi` | `crates/x2mcsapi` | Adapter that restyles foreign apps (web pages and Electron via an injected script, GTK 3/4, Qt Widgets) from the shell `Theme`, so they look coherent with derisk. |
 | `mcsapi-mcp` | `crates/mcsapi-mcp` | Stateless MCP server exposing desktop policy as `simulate` and `arrange` tools over Streamable HTTP. |
+| `mcsapi-compositor` | `crates/mcsapi-compositor` | Smithay Wayland compositor host: runs a desktop shell (the `Shell` trait) with Wayland clients and in-process `mcsapi-runtime` apps side by side. Nested (winit) backend. |
 
 Shared package metadata and dependency versions live in the root
 `Cargo.toml` under `[workspace.package]` and `[workspace.dependencies]`; a new

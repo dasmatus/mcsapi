@@ -1,0 +1,16 @@
+[package]
+name = "mcsapi-compositor"
+description = "A Smithay Wayland compositor host for mcsapi desktops: Wayland clients and in-process mcsapi-ui apps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+egui_glow = { version = "0.36.2", default-features = false }
+glow = "0.17"
+mcsapi.workspace = true
+mcsapi-runtime.workspace = true
+mcsapi-ui.workspace = true
+smithay = { workspace = true, features = ["backend_winit", "desktop", "renderer_gl"] }
