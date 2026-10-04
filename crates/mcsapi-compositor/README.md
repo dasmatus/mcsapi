@@ -105,3 +105,31 @@ compositor.launch("foot").run()?;
 
 Building needs `libxkbcommon-dev`. Running needs EGL/GLES drivers (Mesa's
 llvmpipe works, also under Xvfb).
+
+## GPUI runtime clients
+
+GPUI draws only into windows it opens itself, as an ordinary Wayland client,
+and has no layer-shell, so a shell cannot paint GPUI inside the compositor.
+Instead the compositor starts GPUI programs as runtime clients, on a private
+connection it creates with a socket pair and hands over as `WAYLAND_SOCKET`.
+Their toplevels get the role they were started with, not one they ask for:
+
+```rust,ignore
+use mcsapi_compositor::{Edge, Role, RuntimeClient};
+
+let panel = Role::Panel { edge: Edge::Top, size: 32, keyboard: false };
+compositor
+    .runtime(RuntimeClient::new(["my-gpui-panel"], panel).restart(true))
+    .runtime(RuntimeClient::new(["my-gpui-launcher"], Role::Overlay))
+    .run()?;
+```
+
+- `Role::Panel` sits on its edge above windows and below the shell's chrome,
+  and its strip is passed to `Shell::set_reserved` to keep windows out.
+- `Role::Overlay` covers the output above the chrome and gets every key and
+  pointer event while mapped.
+- `Role::App` is managed like any other window.
+
+The child also gets `MCSAPI_ROLE` (`app`, `panel` or `overlay`). A shell can
+start one at run time with `Command::Runtime`. A client with `restart` comes
+back when it exits, unless it ran for less than two seconds.

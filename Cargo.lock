@@ -3779,6 +3779,7 @@ dependencies = [
  "egui",
  "gpui",
  "libc",
+ "mcsapi-theme",
  "smithay",
 ]
 
@@ -3846,6 +3847,10 @@ dependencies = [
 
 [[package]]
 name = "mcsapi-runtime"
+version = "0.1.0"
+
+[[package]]
+name = "mcsapi-theme"
 version = "0.1.0"
 
 [[package]]
@@ -8140,6 +8145,7 @@ name = "x2mcsapi"
 version = "0.1.0"
 dependencies = [
  "mcsapi-components",
+ "mcsapi-theme",
  "mcsapi-ui",
  "serde_json",
  "tungstenite 0.30.0",

@@ -70,7 +70,7 @@ pub fn web_css(style: &Style) -> String {
     let _ = write!(
         css,
         r#":root {{
-  color-scheme: dark;
+  color-scheme: {scheme};
   --x2mcsapi-background: {background};
   --x2mcsapi-foreground: {foreground};
   --x2mcsapi-card: {card};
@@ -202,6 +202,7 @@ table, th, td {{
   border-color: var(--x2mcsapi-border) !important;
 }}
 "#,
+        scheme = style.scheme.as_str(),
         background = p.background,
         foreground = p.foreground,
         card = p.card,

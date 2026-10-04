@@ -22,13 +22,47 @@ pub struct Theme {
 }
 
 impl Default for Theme {
+    /// The shell colors of the default theme, `derisk-dark`.
     fn default() -> Self {
+        Self::from(&crate::theme::Theme::dark())
+    }
+}
+
+fn color32(color: crate::theme::Color) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r, color.g, color.b, color.a)
+}
+
+impl From<&crate::theme::Theme> for Theme {
+    /// The shell colors of a full theme from the theming engine. Fonts, icons,
+    /// the radius and the destructive color are not shell colors; components
+    /// read them from the theme itself.
+    fn from(theme: &crate::theme::Theme) -> Self {
+        let p = &theme.palette;
         Self {
-            background: Color32::from_rgb(15, 23, 42),
-            surface: Color32::from_rgb(30, 41, 59),
-            foreground: Color32::from_rgb(248, 250, 252),
-            border: Color32::from_rgb(100, 116, 139),
-            accent: Color32::from_rgb(163, 230, 53),
+            background: color32(p.background),
+            surface: color32(p.surface),
+            foreground: color32(p.foreground),
+            border: color32(p.border),
+            accent: color32(p.accent),
+        }
+    }
+}
+
+impl Theme {
+    /// The theming engine's palette for these shell colors, with the default
+    /// destructive color.
+    pub fn palette(&self) -> crate::theme::Palette {
+        let color = |c: Color32| {
+            let [r, g, b, a] = c.to_srgba_unmultiplied();
+            crate::theme::Color::rgba(r, g, b, a)
+        };
+        crate::theme::Palette {
+            background: color(self.background),
+            surface: color(self.surface),
+            foreground: color(self.foreground),
+            border: color(self.border),
+            accent: color(self.accent),
+            destructive: crate::theme::Theme::dark().palette.destructive,
         }
     }
 }

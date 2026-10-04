@@ -11,6 +11,11 @@
 //! - **In-process apps** registered with [`mcsapi_runtime`] and drawn with
 //!   [`mcsapi_ui::App`], through an [`Apps`] provider. They get the same
 //!   title bars, tiling and focus as Wayland clients.
+//! - **Runtime clients** ([`RuntimeClient`]): programs the compositor starts
+//!   itself on a private connection, usually GPUI apps. Because the
+//!   compositor made the connection, it trusts the [`Role`] it gave them, so
+//!   a GPUI window can be a panel or a full-screen overlay without a
+//!   layer-shell protocol (which GPUI does not speak).
 //!
 //! Each frame paints the wallpaper, then for every window from bottom to top
 //! its decoration and its content, then blurs the areas under translucent
@@ -75,6 +80,7 @@ mod atspi;
 mod blur;
 mod host;
 mod hot;
+mod runtime;
 
 use std::{fmt, time::Duration};
 
@@ -86,6 +92,7 @@ pub use smithay::input::keyboard::Keysym;
 use smithay::reexports::calloop::channel;
 
 pub use hot::Hot;
+pub use runtime::{Edge, Reserved, Role, RuntimeClient};
 
 /// Where a window is drawn this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -273,6 +280,8 @@ pub enum Command {
     Launch(String),
     /// Ask a window to close (in-process apps are stopped).
     Close(WindowId),
+    /// Start a runtime client (see [`RuntimeClient`]).
+    Runtime(RuntimeClient),
     /// End the session.
     Quit,
     /// Build the accessibility tree and pass it to [`Shell::described`]
@@ -398,6 +407,10 @@ pub trait Shell: 'static {
     /// The output was resized.
     fn set_output(&mut self, size: (i32, i32));
 
+    /// Runtime panels ([`Role::Panel`]) now cover these strips along the
+    /// output's edges; keep windows out of them.
+    fn set_reserved(&mut self, _reserved: Reserved) {}
+
     /// The keyboard-focused window.
     fn focused(&self) -> Option<WindowId>;
 
@@ -406,6 +419,11 @@ pub trait Shell: 'static {
 
     /// A window changed its title.
     fn set_title(&mut self, _window: WindowId, _title: &str) {}
+
+    /// A window changed its app ID. GPUI and some other toolkits set it
+    /// only after the commit that maps the window, so
+    /// [`Shell::map_window`] can see `app`.
+    fn set_app_id(&mut self, _window: WindowId, _app_id: &str) {}
 
     /// Focus a window (secondary clicks on window content).
     fn focus(&mut self, _window: WindowId) {}
@@ -572,6 +590,7 @@ pub struct Compositor<S> {
     title: String,
     vrr: bool,
     launch: Vec<String>,
+    runtime: Vec<RuntimeClient>,
     jobs: Option<channel::Channel<Job<S>>>,
 }
 
@@ -585,6 +604,7 @@ impl<S: Shell + 'static> Compositor<S> {
             title: "mcsapi".into(),
             vrr: false,
             launch: Vec::new(),
+            runtime: Vec::new(),
             jobs: None,
         }
     }
@@ -618,6 +638,13 @@ impl<S: Shell + 'static> Compositor<S> {
     /// Launches an app once the session is up (see [`Command::Launch`]).
     pub fn launch(mut self, app: impl Into<String>) -> Self {
         self.launch.push(app.into());
+        self
+    }
+
+    /// Starts a runtime client when the session is up, for example a GPUI
+    /// panel (see [`RuntimeClient`]).
+    pub fn runtime(mut self, client: RuntimeClient) -> Self {
+        self.runtime.push(client);
         self
     }
 
