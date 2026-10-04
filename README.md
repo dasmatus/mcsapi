@@ -226,6 +226,21 @@ current job whenever a workspace crate changes. Jobs from `bacon.toml`:
 and `mcp` (`m`), which rebuilds and restarts the MCP server on every save. Start
 on one directly with `bacon test` or `bacon mcp`.
 
+### Nix
+
+`flake.nix` has a dev shell with the Rust toolchain, the Wayland, libinput,
+GPU and windowing libraries, bacon, cargo-llvm-cov, cargo-audit and Node.js
+for `bindings/node`. With [nix-direnv](https://github.com/nix-community/nix-direnv),
+`direnv allow` enters it on `cd` (see `.envrc`).
+
+```sh
+nix develop                # the dev shell
+nix build                  # mcsapi-mcp and x2mcsapi; also .#mcsapi-mcp, .#x2mcsapi
+nix flake check            # rustfmt, clippy, tests and docs (default and GPUI), the example
+nix fmt                    # nixfmt and rustfmt
+nix flake update nixpkgs   # bump one input by name
+```
+
 The root is a virtual manifest, so features are named per crate
 (`mcsapi/gpui`), or use `-p mcsapi --features gpui`.
 
