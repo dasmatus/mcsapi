@@ -89,7 +89,7 @@ use smithay::{
 
 use crate::{
     Apps, Blur, ClientRequest, Command, Compositor, GestureEvent, InstanceId, Job, KeyInput,
-    KeyRoute, Modifiers, Placement, Press, Shell, blur, egui,
+    KeyRoute, Modifiers, OutputTiming, Placement, Press, Shell, blur, egui,
 };
 use mcsapi_ui::gesture::EguiBridge;
 
@@ -275,6 +275,10 @@ pub(crate) struct Host<S: Shell> {
     gl: Option<Arc<glow::Context>>,
     retired: Vec<egui_glow::Painter>,
     blurrer: Option<blur::Blurrer>,
+    vrr: bool,
+    /// Refresh rate of the monitor showing the session window.
+    refresh_mhz: u32,
+    timing_checked: Option<Instant>,
 
     shell: S,
     apps: Option<Box<dyn Apps>>,
@@ -318,6 +322,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         apps,
         size: (w, h),
         title,
+        vrr,
         launch,
         jobs,
     } = config;
@@ -406,6 +411,9 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         gl: None,
         retired: Vec::new(),
         blurrer: None,
+        vrr,
+        refresh_mhz: 60_000,
+        timing_checked: None,
         shell,
         apps,
         windows: HashMap::new(),
@@ -461,7 +469,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         .handle()
         .insert_source(Timer::immediate(), |_, _, host| {
             host.render();
-            let interval = host.shell.frame_interval();
+            let interval = host.shell.frame_interval(&host.timing());
             TimeoutAction::ToDuration(
                 interval.clamp(Duration::from_millis(4), Duration::from_secs(1)),
             )
@@ -656,7 +664,7 @@ impl<S: Shell> Host<S> {
             WinitEvent::Resized { size, .. } => {
                 let mode = OutputMode {
                     size,
-                    refresh: 60_000,
+                    refresh: self.refresh_mhz as i32,
                 };
                 self.output
                     .change_current_state(Some(mode), None, None, None);
@@ -1216,9 +1224,49 @@ impl<S: Shell> Host<S> {
         FilterResult::Intercept(())
     }
 
+    fn timing(&self) -> OutputTiming {
+        OutputTiming {
+            refresh_mhz: self.refresh_mhz,
+            vrr: self.vrr,
+        }
+    }
+
+    /// Follows the refresh rate of the monitor the session window is on
+    /// (checked about once a second; the window can move between monitors)
+    /// and advertises it to clients through the output mode.
+    fn update_refresh(&mut self) {
+        if self
+            .timing_checked
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.timing_checked = Some(Instant::now());
+        let refresh = self
+            .backend
+            .window()
+            .current_monitor()
+            .and_then(|m| m.refresh_rate_millihertz())
+            .filter(|&r| r >= 1_000)
+            .unwrap_or(60_000);
+        if refresh != self.refresh_mhz {
+            self.refresh_mhz = refresh;
+            if let Some(mode) = self.output.current_mode() {
+                let mode = OutputMode {
+                    refresh: refresh as i32,
+                    ..mode
+                };
+                self.output
+                    .change_current_state(Some(mode), None, None, None);
+                self.output.set_preferred(mode);
+            }
+        }
+    }
+
     /// Draws one frame: background, then per window its decoration and
     /// content, then the chrome and the pointer.
     fn render(&mut self) {
+        self.update_refresh();
         self.shell.tick();
         if self
             .scroll
