@@ -219,12 +219,18 @@ cargo test --workspace --features mcsapi/gpui
 cargo doc --workspace --no-deps
 ```
 
-For hot reload, install [bacon](https://dystroy.org/bacon/) once with
+For a nested desktop that hot-reloads while it runs, see
+[mcsapi-compositor's README](crates/mcsapi-compositor/README.md#hot-reload-in-a-nested-instance):
+`dx serve --hot-patch` patches the running instance on save in debug builds,
+keeping its windows and state.
+
+To rerun checks on save, install [bacon](https://dystroy.org/bacon/) once with
 `cargo install --locked bacon`, then run `bacon` at the root. It reruns the
 current job whenever a workspace crate changes. Jobs from `bacon.toml`:
 `check` (default), `clippy` (`c`), `test` (`t`), `doc` (`d`), `example` (`e`),
-and `mcp` (`m`), which rebuilds and restarts the MCP server on every save. Start
-on one directly with `bacon test` or `bacon mcp`.
+`mcp` (`m`), which restarts the MCP server, and `nested` (`n`), which rebuilds
+and restarts the nested tiling session. Start on one directly with
+`bacon test` or `bacon nested`.
 
 ### Nix
 

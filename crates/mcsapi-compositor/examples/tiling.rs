@@ -5,6 +5,13 @@
 //! $ cargo run -p mcsapi-compositor --example tiling -- foot
 //! ```
 //!
+//! For a nested instance that hot-patches as you edit this file, run it
+//! under the Dioxus CLI instead (see the crate README):
+//!
+//! ```console
+//! $ dx serve --hot-patch -p mcsapi-compositor --example tiling --features hotpatch
+//! ```
+//!
 //! Arguments are apps to launch; `clock` is the built-in app. Keys:
 //! Super+Enter launches foot, Super+C the clock, Super+J/K move focus,
 //! Super+Space promotes, Super+1…4 switch workspaces, Super+Q closes,
@@ -14,7 +21,7 @@ use std::collections::BTreeMap;
 
 use mcsapi::{Desktop, Geometry, WindowId, WorkspaceId};
 use mcsapi_compositor::{
-    App, AppId, Apps, Command, Compositor, InstanceId, KeyInput, KeyRoute, Keysym, Placement,
+    App, AppId, Apps, Command, Compositor, Hot, InstanceId, KeyInput, KeyRoute, Keysym, Placement,
     Shell, Theme, egui,
 };
 use mcsapi_runtime::{Manifest, Runtime};
@@ -257,10 +264,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         theme: Theme::default(),
         commands: Vec::new(),
     };
-    let mut compositor = Compositor::new(shell).title("mcsapi tiling").apps(BuiltIn {
-        runtime,
-        running: BTreeMap::new(),
-    });
+    // `Hot` lets `dx serve --hot-patch` swap in edited `Tiling` methods live.
+    let mut compositor = Compositor::new(Hot(shell))
+        .title("mcsapi tiling")
+        .apps(BuiltIn {
+            runtime,
+            running: BTreeMap::new(),
+        });
     for app in std::env::args().skip(1) {
         compositor = compositor.launch(app);
     }
