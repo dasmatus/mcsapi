@@ -6,7 +6,10 @@ use std::{
     ffi::OsString,
     fs::File,
     io,
-    os::fd::{AsRawFd, OwnedFd},
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::{net::UnixStream, process::CommandExt},
+    },
     process::{Child, Command as Process},
     sync::{
         Arc,
@@ -30,7 +33,7 @@ use smithay::{
             element::{
                 AsRenderElements, Element, RenderElement, surface::WaylandSurfaceRenderElement,
             },
-            gles::GlesRenderer,
+            gles::{GlesFrame, GlesRenderer},
             utils::on_commit_buffer_handler,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
@@ -89,7 +92,8 @@ use smithay::{
 
 use crate::{
     Apps, Blur, ClientRequest, Command, Compositor, GestureEvent, InstanceId, Job, KeyInput,
-    KeyRoute, Modifiers, OutputTiming, Placement, Press, Shell, blur, egui,
+    KeyRoute, Modifiers, OutputTiming, Placement, Press, Reserved, Role, RuntimeClient, Shell,
+    blur, egui,
 };
 use mcsapi_ui::gesture::EguiBridge;
 
@@ -235,9 +239,25 @@ enum Content {
     },
 }
 
+/// A running [`RuntimeClient`].
+struct RuntimeChild {
+    client: RuntimeClient,
+    child: Child,
+    started: Instant,
+}
+
+/// A toplevel from a runtime client with a panel or overlay role, placed by
+/// the compositor instead of the shell.
+struct Layer {
+    window: Window,
+    role: Role,
+}
+
 /// Who receives pointer input until all buttons are released.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Route {
+    /// A runtime panel or overlay (a Wayland client).
+    Layer,
     Chrome,
     Shell,
     Content(Option<WindowId>),
@@ -308,12 +328,26 @@ pub(crate) struct Host<S: Shell> {
     consumed_keys: HashSet<u32>,
 
     children: Vec<Child>,
+
+    /// Runtime clients this compositor started.
+    runtime: Vec<RuntimeChild>,
+    /// Their mapped panels and overlays, bottom to top.
+    layers: Vec<Layer>,
+    /// The panel a click gave the keyboard to ([`Role::Panel`] `keyboard`).
+    layer_focus: Option<WlSurface>,
+    /// The surface the keyboard was last given to.
+    keyboard_surface: Option<WlSurface>,
+    /// What the shell was last told panels cover.
+    reserved: Reserved,
 }
 
 /// Per-client Wayland state.
 #[derive(Default)]
 struct ClientState {
     compositor_state: CompositorClientState,
+    /// The role of a runtime client, fixed when the compositor created its
+    /// connection; `None` for clients of the public socket.
+    role: Option<Role>,
 }
 
 impl ClientData for ClientState {
@@ -329,6 +363,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         title,
         vrr,
         launch,
+        runtime,
         jobs,
     } = config;
     let mut event_loop: EventLoop<Host<S>> = EventLoop::try_new()?;
@@ -439,6 +474,11 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         scroll: None,
         consumed_keys: HashSet::new(),
         children: Vec::new(),
+        runtime: Vec::new(),
+        layers: Vec::new(),
+        layer_focus: None,
+        keyboard_surface: None,
+        reserved: Reserved::default(),
     };
     host.shell.set_output((size.w, size.h));
     host.shell
@@ -459,6 +499,9 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
     event_loop.handle().insert_source(
         Timer::from_duration(Duration::from_millis(300)),
         move |_, _, host| {
+            for client in &runtime {
+                host.spawn_runtime(client.clone());
+            }
             for app in &launch {
                 host.launch(app);
             }
@@ -487,7 +530,11 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         host.popups.cleanup();
         let _ = host.display.flush_clients();
     });
-    for child in &mut host.children {
+    for child in host
+        .children
+        .iter_mut()
+        .chain(host.runtime.iter_mut().map(|r| &mut r.child))
+    {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -511,6 +558,7 @@ impl<S: Shell> Host<S> {
                 match command {
                     Command::Launch(app) => self.launch(&app),
                     Command::Close(window) => self.close(window),
+                    Command::Runtime(client) => self.spawn_runtime(client),
                     Command::Quit => self.signal.stop(),
                 }
             }
@@ -568,6 +616,144 @@ impl<S: Shell> Host<S> {
     fn reap_children(&mut self) {
         self.children
             .retain_mut(|child| child.try_wait().map_or(true, |status| status.is_none()));
+        let now = Instant::now();
+        let mut restart = Vec::new();
+        self.runtime.retain_mut(|r| {
+            let exited = r.child.try_wait().is_ok_and(|status| status.is_some());
+            if exited {
+                if r.client.restarts_after(r.started, now) {
+                    restart.push(r.client.clone());
+                } else if r.client.restart {
+                    eprintln!(
+                        "mcsapi-compositor: {:?} exited within {:?} of starting; not restarting it",
+                        r.client.argv,
+                        RuntimeClient::MIN_UPTIME
+                    );
+                }
+            }
+            !exited
+        });
+        for client in restart {
+            self.spawn_runtime(client);
+        }
+    }
+
+    /// Starts `client` on a private connection that carries its role.
+    fn spawn_runtime(&mut self, client: RuntimeClient) {
+        let Some((program, args)) = client.argv.split_first() else {
+            return;
+        };
+        let (ours, theirs) = match UnixStream::pair() {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("mcsapi-compositor: cannot start {program}: {e}");
+                return;
+            }
+        };
+        let state = ClientState {
+            role: Some(client.role),
+            ..ClientState::default()
+        };
+        if let Err(e) = self.display.insert_client(ours, Arc::new(state)) {
+            eprintln!("mcsapi-compositor: cannot start {program}: {e}");
+            return;
+        }
+        let fd = theirs.as_raw_fd();
+        let mut process = Process::new(program);
+        process
+            .args(args)
+            // libwayland connects to WAYLAND_SOCKET before WAYLAND_DISPLAY,
+            // and closes the fd once connected.
+            .env("WAYLAND_SOCKET", fd.to_string())
+            .env("WAYLAND_DISPLAY", &self.socket_name)
+            .env("MCSAPI_ROLE", client.role.as_str())
+            .env("XDG_SESSION_TYPE", "wayland")
+            .env_remove("DISPLAY");
+        // SAFETY: fcntl is async-signal-safe and touches only the child's
+        // copy of `fd`, which stays open in the parent until spawn returns.
+        unsafe {
+            process.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        match process.spawn() {
+            Ok(child) => self.runtime.push(RuntimeChild {
+                client,
+                child,
+                started: Instant::now(),
+            }),
+            Err(e) => eprintln!("mcsapi-compositor: cannot start {program}: {e}"),
+        }
+        // The child has its copy; ours closes here.
+        drop(theirs);
+    }
+
+    /// The role a surface's client was started with, if it is a runtime
+    /// client.
+    fn role_of(&self, surface: &WlSurface) -> Option<Role> {
+        let client = self.display.get_client(surface.id()).ok()?;
+        client.get_data::<ClientState>()?.role
+    }
+
+    /// Places panels and overlays on the output and tells the shell what
+    /// panels cover.
+    fn arrange_layers(&mut self) {
+        let size = self.backend.window_size();
+        for layer in &self.layers {
+            let Some(g) = layer.role.geometry((size.w, size.h)) else {
+                continue;
+            };
+            if let Some(toplevel) = layer.window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some(g.size);
+                    state.states.set(ToplevelState::Activated);
+                });
+                if toplevel.is_initial_configure_sent() {
+                    toplevel.send_pending_configure();
+                }
+            }
+            let offset = layer.window.geometry().loc;
+            self.space
+                .map_element(layer.window.clone(), g.loc - offset, false);
+            self.space.raise_element(&layer.window, false);
+        }
+        let reserved = Reserved::of(self.layers.iter().map(|l| l.role));
+        if reserved != self.reserved {
+            self.reserved = reserved;
+            self.shell.set_reserved(reserved);
+        }
+    }
+
+    /// The topmost panel or overlay under the pointer. An overlay covers the
+    /// whole output, so it takes everything.
+    fn layer_under(&self) -> Option<&Layer> {
+        let size = self.backend.window_size();
+        let (x, y) = self.point();
+        self.layers.iter().rev().find(|layer| {
+            layer.role.geometry((size.w, size.h)).is_some_and(|g| {
+                x >= g.loc.x && y >= g.loc.y && x < g.loc.x + g.size.w && y < g.loc.y + g.size.h
+            })
+        })
+    }
+
+    /// The overlay that has the keyboard, if one is mapped.
+    fn overlay(&self) -> Option<&Layer> {
+        self.layers.iter().rev().find(|l| l.role == Role::Overlay)
+    }
+
+    /// Whether pointer input at the pointer goes to a panel or overlay
+    /// instead of the chrome or windows: always over an overlay, and over a
+    /// panel unless one of the chrome's popups is open (it may overlap).
+    fn pointer_on_layer(&self) -> bool {
+        match self.layer_under() {
+            Some(layer) if layer.role == Role::Overlay => true,
+            Some(_) => !egui::Popup::is_any_open(&self.chrome.ctx),
+            None => false,
+        }
     }
 
     fn close(&mut self, window: WindowId) {
@@ -662,13 +848,25 @@ impl<S: Shell> Host<S> {
             self.space.raise_element(window, false);
         }
 
+        self.arrange_layers();
+
+        // The keyboard goes to an overlay while one is mapped, then to a
+        // panel that was clicked, then to the shell's focused window.
         let focused = self.shell.focused();
-        if focused != self.keyboard_focus {
-            self.keyboard_focus = focused;
-            let surface = focused.and_then(|id| match self.windows.get(&id) {
+        self.keyboard_focus = focused;
+        let layer = self
+            .overlay()
+            .and_then(|l| l.window.toplevel())
+            .map(|t| t.wl_surface().clone())
+            .or_else(|| self.layer_focus.clone());
+        let surface = layer.or_else(|| {
+            focused.and_then(|id| match self.windows.get(&id) {
                 Some(Content::Wayland(w)) => w.toplevel().map(|t| t.wl_surface().clone()),
                 _ => None,
-            });
+            })
+        });
+        if surface != self.keyboard_surface {
+            self.keyboard_surface = surface.clone();
             if let Some(keyboard) = self.seat.get_keyboard() {
                 keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
             }
@@ -808,11 +1006,12 @@ impl<S: Shell> Host<S> {
                     phase,
                     modifiers,
                 };
-                if self.chrome_wants_pointer() {
+                let on_layer = self.pointer_on_layer();
+                if !on_layer && self.chrome_wants_pointer() {
                     self.chrome_events.push(wheel(egui::TouchPhase::Move));
                     return;
                 }
-                let under = self.content_under();
+                let under = if on_layer { None } else { self.content_under() };
                 if fingers && let Some(window) = under.filter(|w| self.is_internal(*w)) {
                     // Bracket finger scrolling in Start and End so apps can
                     // follow it 1:1 and coast (mcsapi_ui::gesture).
@@ -1071,6 +1270,27 @@ impl<S: Shell> Host<S> {
 
     fn pointer_motion(&mut self, time: u32) {
         let pos = self.egui_pos();
+        if self.route == Some(Route::Layer) || (self.route.is_none() && self.pointer_on_layer()) {
+            self.chrome_events.push(egui::Event::PointerGone);
+            let target = self.pointer_target.take();
+            if let Some(events) = self.internal_events(target) {
+                events.push(egui::Event::PointerGone);
+            }
+            let focus = self.surface_under();
+            if let Some(pointer) = self.seat.get_pointer() {
+                pointer.motion(
+                    self,
+                    focus,
+                    &MotionEvent {
+                        location: self.pointer,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time,
+                    },
+                );
+                pointer.frame(self);
+            }
+            return;
+        }
         self.chrome_events.push(egui::Event::PointerMoved(pos));
         let route = self.route.unwrap_or(if self.chrome_wants_pointer() {
             Route::Chrome
@@ -1139,6 +1359,24 @@ impl<S: Shell> Host<S> {
             _ => None,
         };
         if pressed && self.route.is_none() {
+            // A click on a panel that takes the keyboard gives it the
+            // keyboard; a click anywhere else takes it back.
+            let layer = self
+                .pointer_on_layer()
+                .then(|| self.layer_under())
+                .flatten()
+                .map(|l| (l.role, l.window.toplevel().map(|t| t.wl_surface().clone())));
+            let on_layer = layer.is_some();
+            self.layer_focus = match layer {
+                Some((Role::Panel { keyboard: true, .. }, surface)) => surface,
+                _ => None,
+            };
+            if on_layer {
+                self.route = Some(Route::Layer);
+                self.sync();
+            }
+        }
+        if pressed && self.route.is_none() {
             self.route = Some(if self.chrome_wants_pointer() {
                 Route::Chrome
             } else if button == BTN_LEFT {
@@ -1160,6 +1398,20 @@ impl<S: Shell> Host<S> {
             modifiers: self.egui_mods,
         });
         match self.route.unwrap_or(Route::Content(None)) {
+            Route::Layer => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button,
+                            state,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    );
+                    pointer.frame(self);
+                }
+            }
             Route::Chrome => {
                 self.chrome_events.extend(pointer_event);
                 // The cancelled press's client lost focus, so this reaches
@@ -1252,6 +1504,22 @@ impl<S: Shell> Host<S> {
                 alt: modifiers.alt,
             },
         };
+        // An overlay gets every key, shell shortcuts included; a panel
+        // holding the keyboard gets what the shell leaves.
+        if self.overlay().is_some() {
+            return FilterResult::Forward;
+        }
+        if self.layer_focus.is_some() {
+            return match shell_key_route(&mut self.shell, &key, consumed_release) {
+                KeyRoute::Consume => {
+                    if pressed {
+                        self.consumed_keys.insert(keycode);
+                    }
+                    FilterResult::Intercept(())
+                }
+                _ => FilterResult::Forward,
+            };
+        }
         let route = match shell_key_route(&mut self.shell, &key, consumed_release) {
             KeyRoute::Client if self.chrome.ctx.egui_wants_keyboard_input() => KeyRoute::Chrome,
             route => route,
@@ -1355,10 +1623,10 @@ impl<S: Shell> Host<S> {
         };
         let pointer = self.egui_pos();
         let shell = &mut self.shell;
-        let output = self.chrome.ctx.run_ui(input, |root| {
-            shell.chrome(root, elapsed);
-            paint_cursor(root.ctx(), pointer);
-        });
+        let output = self
+            .chrome
+            .ctx
+            .run_ui(input, |root| shell.chrome(root, elapsed));
         let chrome = Pass {
             primitives: self
                 .chrome
@@ -1367,6 +1635,8 @@ impl<S: Shell> Host<S> {
             textures: output.textures_delta,
         };
 
+        // Its own pass, so it stays above overlays drawn after the chrome.
+        let cursor = self.paint_only(screen, time, |_, painter| paint_cursor(painter, pointer));
         let blurs = self.shell.blur_regions();
         let placements = self.shell.placements();
         let background = self.paint_only(screen, time, |shell, painter| {
@@ -1389,6 +1659,7 @@ impl<S: Shell> Host<S> {
             contents,
             &blurs,
             chrome,
+            cursor,
         ) {
             eprintln!("mcsapi-compositor: render failed: {e}");
         }
@@ -1503,6 +1774,7 @@ impl<S: Shell> Host<S> {
         contents: Vec<Option<Pass>>,
         blurs: &[Blur],
         mut chrome: Pass,
+        mut cursor: Pass,
     ) -> Result {
         let scale = Scale::from(1.0);
         let screen_px = [size.w as u32, size.h as u32];
@@ -1563,6 +1835,27 @@ impl<S: Shell> Host<S> {
             };
             surfaces.push(elements);
         }
+        // Panels go under the chrome, so its popups can overlap them;
+        // overlays go above it.
+        let mut panels = Vec::new();
+        let mut overlays = Vec::new();
+        for layer in &self.layers {
+            let Some(loc) = self.space.element_location(&layer.window) else {
+                continue;
+            };
+            let elements = layer
+                .window
+                .render_elements::<WaylandSurfaceRenderElement<_>>(
+                    renderer,
+                    loc.to_physical_precise_round(scale),
+                    scale,
+                    1.0,
+                );
+            match layer.role {
+                Role::Overlay => overlays.push(elements),
+                _ => panels.push(elements),
+            }
+        }
 
         let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
         frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
@@ -1582,17 +1875,7 @@ impl<S: Shell> Host<S> {
                 let painter = egui.painter.as_mut().expect("created above");
                 paint(&gl, painter, screen_px, &mut pass);
             }
-            // Elements come topmost first.
-            for element in elements.iter().rev() {
-                let dst = element.geometry(scale);
-                element.draw(
-                    &mut frame,
-                    element.src(),
-                    dst,
-                    &[Rectangle::from_size(dst.size)],
-                    &[],
-                )?;
-            }
+            draw_surfaces(&mut frame, elements, scale)?;
         }
         if !blurs.is_empty() {
             if self.blurrer.is_none() && !self.blur_unavailable {
@@ -1613,8 +1896,16 @@ impl<S: Shell> Host<S> {
                 reset_gl(&gl, screen_px);
             }
         }
+        for elements in &panels {
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
         let chrome_painter = self.chrome.painter.as_mut().expect("created above");
         paint(&gl, chrome_painter, screen_px, &mut chrome);
+        for elements in &overlays {
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
+        let deco = self.decorations.painter.as_mut().expect("created above");
+        paint(&gl, deco, screen_px, &mut cursor);
         let _sync = frame.finish()?;
         drop(framebuffer);
         self.backend.submit(Some(&[full]))?;
@@ -1635,6 +1926,14 @@ impl<S: Shell> Host<S> {
         let Some(toplevel) = window.toplevel().cloned() else {
             return;
         };
+        if let Some(role) = self.role_of(surface).filter(|r| *r != Role::App) {
+            self.layers.push(Layer { window, role });
+            self.sync();
+            if !toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+            }
+            return;
+        }
         let (app_id, title) = with_states(surface, |states| {
             states
                 .data_map
@@ -1665,12 +1964,28 @@ fn shell_key_route(shell: &mut impl Shell, key: &KeyInput, consumed_release: boo
     }
 }
 
-/// Draws the pointer above everything (the nested window hides the host's).
-fn paint_cursor(ctx: &egui::Context, at: egui::Pos2) {
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Debug,
-        egui::Id::new("mcsapi-cursor"),
-    ));
+/// Draws one window's surfaces; Smithay lists them topmost first.
+fn draw_surfaces(
+    frame: &mut GlesFrame<'_, '_>,
+    elements: &[WaylandSurfaceRenderElement<GlesRenderer>],
+    scale: Scale<f64>,
+) -> Result {
+    for element in elements.iter().rev() {
+        let dst = element.geometry(scale);
+        element.draw(
+            frame,
+            element.src(),
+            dst,
+            &[Rectangle::from_size(dst.size)],
+            &[],
+        )?;
+    }
+    Ok(())
+}
+
+/// Draws the pointer, which the frame paints last (the nested window hides
+/// the host's).
+fn paint_cursor(painter: &egui::Painter, at: egui::Pos2) {
     let points = [
         (0.0, 0.0),
         (0.0, 17.0),
@@ -1766,6 +2081,12 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
             }
             if let Some((_, window)) = self.wayland_window_of(&root) {
                 window.on_commit();
+            } else if let Some(layer) = self
+                .layers
+                .iter()
+                .find(|l| l.window.toplevel().is_some_and(|t| t.wl_surface() == &root))
+            {
+                layer.window.on_commit();
             }
         }
         self.manage_on_first_commit(surface);
@@ -1793,6 +2114,22 @@ impl<S: Shell + 'static> XdgShellHandler for Host<S> {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.unmanaged
             .retain(|w| w.toplevel().is_some_and(|t| t != &surface));
+        if let Some(i) = self
+            .layers
+            .iter()
+            .position(|l| l.window.toplevel().is_some_and(|t| t == &surface))
+        {
+            let layer = self.layers.remove(i);
+            self.space.unmap_elem(&layer.window);
+            if self.layer_focus.as_ref() == Some(surface.wl_surface()) {
+                self.layer_focus = None;
+            }
+            if self.route == Some(Route::Layer) {
+                self.route = None;
+            }
+            self.sync();
+            return;
+        }
         if let Some((id, window)) = self
             .wayland_window_of(surface.wl_surface())
             .map(|(id, w)| (id, w.clone()))
@@ -1806,6 +2143,22 @@ impl<S: Shell + 'static> XdgShellHandler for Host<S> {
                     keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
                 }
             }
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        let Some((id, _)) = self.wayland_window_of(surface.wl_surface()) else {
+            return;
+        };
+        let app_id = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok())
+                .and_then(|d| d.app_id.clone())
+        });
+        if let Some(app_id) = app_id {
+            self.shell.set_app_id(id, &app_id);
         }
     }
 
