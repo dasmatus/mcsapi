@@ -13,7 +13,9 @@
 //!   title bars, tiling and focus as Wayland clients.
 //!
 //! Each frame paints the wallpaper, then for every window from bottom to top
-//! its decoration and its content, then the chrome. The session runs nested
+//! its decoration and its content, then blurs the areas under translucent
+//! panels ([`Shell::blur_regions`]), then the chrome. Frames come every
+//! [`Shell::frame_interval`]. The session runs nested
 //! in a window of the current X11 or Wayland session (Smithay's winit
 //! backend); a DRM/KMS backend is future work.
 //!
@@ -66,15 +68,19 @@
 #![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod blur;
 mod host;
+mod hot;
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use mcsapi::{Geometry, WindowId};
 pub use mcsapi_runtime::{AppId, InstanceId};
-pub use mcsapi_ui::{App, Theme, egui};
+pub use mcsapi_ui::{App, GestureEvent, Theme, egui};
 pub use smithay::input::keyboard::Keysym;
 use smithay::reexports::calloop::channel;
+
+pub use hot::Hot;
 
 /// Where a window is drawn this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,6 +113,23 @@ impl Placement {
         }
     }
 }
+
+/// A screen area whose backdrop is blurred before the chrome is painted.
+///
+/// Paint the panel itself in [`Shell::chrome`] with a translucent fill; the
+/// fill's alpha sets how much of the blurred backdrop shows through.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Blur {
+    /// Area in logical, output-relative coordinates.
+    pub area: Geometry,
+    /// Corner radius, matching the panel's rounded corners.
+    pub corner_radius: u8,
+    /// Blur strength from 1 (slight) to 10 (heavy); 0 draws nothing.
+    pub strength: u8,
+}
+
+/// Default time between frames, about 60 per second.
+pub const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 /// A set of window edges.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -267,6 +290,14 @@ pub trait Shell: 'static {
         KeyRoute::Client
     }
 
+    /// A touchpad gesture. Return `true` from a begin event to take the whole
+    /// gesture (for example three-finger swipes between workspaces); its later
+    /// events then all come here and the return value is ignored. Gestures
+    /// the shell leaves go to the chrome or the content under the pointer.
+    fn gesture(&mut self, _event: &GestureEvent) -> bool {
+        false
+    }
+
     /// A client asked to change its window state.
     fn client_request(&mut self, _window: WindowId, _request: ClientRequest) {}
 
@@ -283,6 +314,18 @@ pub trait Shell: 'static {
 
     /// Shows the chrome above all windows. `elapsed_ms` counts from start.
     fn chrome(&mut self, _ui: &mut egui::Ui, _elapsed_ms: u32) {}
+
+    /// Areas to blur under the chrome this frame, bottom to top. Called right
+    /// after [`Shell::chrome`], so it can report panels laid out there.
+    fn blur_regions(&self) -> Vec<Blur> {
+        Vec::new()
+    }
+
+    /// Time until the next frame, for example longer in a low power mode.
+    /// Clamped to 4 ms–1 s.
+    fn frame_interval(&self) -> Duration {
+        DEFAULT_FRAME_INTERVAL
+    }
 
     /// The command line for launching `app` as a Wayland client.
     fn spawn_argv(&mut self, app: &str) -> Vec<String> {
@@ -394,7 +437,11 @@ impl<S: Shell + 'static> Compositor<S> {
     }
 
     /// Runs the session until its window closes or the shell quits.
+    ///
+    /// With the `hotpatch` feature in a debug build, this also listens for
+    /// patches from `dx serve --hot-patch`; see [`Hot`].
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        hot::connect();
         host::run(self)
     }
 }
