@@ -5,6 +5,9 @@
 //! loop, window, or painter: the host (usually `mcsapi-runtime`) feeds input,
 //! paints the returned output, and schedules repaints.
 //!
+//! [`gesture`] adds 1:1 touchpad gestures: pan, pinch and rotate content that
+//! follows the fingers exactly and coasts when they lift.
+//!
 //! ```
 //! use mcsapi_ui::{App, Theme, egui};
 //!
@@ -30,7 +33,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod gesture;
+
 pub use egui;
+pub use gesture::{GestureEvent, GestureTracker, Transform};
 pub use mcsapi::toolkit::{FallbackReason, GraphicsCapabilities, Toolkit};
 pub use mcsapi::widgets::Theme;
 

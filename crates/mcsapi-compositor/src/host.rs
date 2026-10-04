@@ -14,8 +14,10 @@ use smithay::{
     backend::{
         egl,
         input::{
-            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputEvent, KeyState,
-            KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent as _,
+            GestureEndEvent as _, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
+            InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
+            PointerButtonEvent,
         },
         renderer::{
             Color32F, Frame, Renderer,
@@ -25,15 +27,15 @@ use smithay::{
             gles::GlesRenderer,
             utils::on_commit_buffer_handler,
         },
-        winit::{self, WinitEvent, WinitGraphicsBackend, WinitInput},
+        winit::{self, WinitEvent, WinitGraphicsBackend},
     },
-    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
-    delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_output, delegate_pointer_gestures,
+    delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         Seat, SeatHandler, SeatState,
         keyboard::{FilterResult, Keysym, KeysymHandle, ModifiersState, XkbConfig},
-        pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent},
+        pointer::{self, AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent},
     },
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
@@ -61,6 +63,7 @@ use smithay::{
             is_sync_subsurface, with_states,
         },
         output::{OutputHandler, OutputManagerState},
+        pointer_gestures::PointerGesturesState,
         selection::{
             SelectionHandler,
             data_device::{
@@ -79,15 +82,19 @@ use smithay::{
 };
 
 use crate::{
-    Apps, ClientRequest, Command, Compositor, InstanceId, Job, KeyInput, KeyRoute, Modifiers,
-    Placement, Press, Shell, egui,
+    Apps, ClientRequest, Command, Compositor, GestureEvent, InstanceId, Job, KeyInput, KeyRoute,
+    Modifiers, Placement, Press, Shell, egui,
 };
+use mcsapi_ui::gesture::EguiBridge;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
+/// Touchpad scrolling without stop events (nested under winit) ends after
+/// this long without motion.
+const SCROLL_IDLE_MS: u32 = 50;
 
 /// An egui context plus its GL painter (created once GL is available).
 struct Egui {
@@ -132,6 +139,15 @@ enum Route {
     Content,
 }
 
+/// Who receives a touchpad gesture from its begin to its end.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GestureRoute {
+    Shell,
+    Chrome,
+    Internal(WindowId),
+    Client,
+}
+
 /// Compositor state, generic over the desktop shell.
 pub(crate) struct Host<S: Shell> {
     start: Instant,
@@ -144,6 +160,7 @@ pub(crate) struct Host<S: Shell> {
     _xdg_decoration_state: XdgDecorationState,
     shm_state: ShmState,
     _output_manager_state: OutputManagerState,
+    _pointer_gestures_state: PointerGesturesState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
     popups: PopupManager,
@@ -168,6 +185,10 @@ pub(crate) struct Host<S: Shell> {
     route: Option<Route>,
     buttons: u32,
     egui_mods: egui::Modifiers,
+    gesture: Option<GestureRoute>,
+    gesture_bridge: EguiBridge,
+    /// The in-process app being scrolled with fingers, and when it last moved.
+    scroll: Option<(WindowId, u32)>,
     /// Keys whose press the shell consumed; their release is consumed too.
     consumed_keys: HashSet<u32>,
 
@@ -268,6 +289,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         _xdg_decoration_state: XdgDecorationState::new::<Host<S>>(&dh),
         shm_state: ShmState::new::<Host<S>>(&dh, vec![]),
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
+        _pointer_gestures_state: PointerGesturesState::new::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
         seat_state,
         popups: PopupManager::default(),
@@ -289,6 +311,9 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         route: None,
         buttons: 0,
         egui_mods: egui::Modifiers::default(),
+        gesture: None,
+        gesture_bridge: EguiBridge::default(),
+        scroll: None,
         consumed_keys: HashSet::new(),
         children: Vec::new(),
     };
@@ -559,7 +584,9 @@ impl<S: Shell> Host<S> {
         }
     }
 
-    fn input(&mut self, event: InputEvent<WinitInput>) {
+    /// Routes one input event. Generic so a libinput backend, which also
+    /// reports touchpad gestures, can share it; winit reports none.
+    fn input<B: InputBackend>(&mut self, event: InputEvent<B>) {
         match event {
             InputEvent::Keyboard { event } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -594,33 +621,267 @@ impl<S: Shell> Host<S> {
                         .unwrap_or(0.0)
                 };
                 let (h, v) = (amount(Axis::Horizontal), amount(Axis::Vertical));
-                let wheel = egui::Event::MouseWheel {
+                let source = event.source();
+                let fingers = matches!(source, AxisSource::Finger | AxisSource::Continuous);
+                // libinput ends finger scrolling with an empty event.
+                let stop = fingers && h == 0.0 && v == 0.0;
+                let modifiers = self.egui_mods;
+                let wheel = |phase| egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(-h as f32, -v as f32),
-                    phase: egui::TouchPhase::Move,
-                    modifiers: self.egui_mods,
+                    phase,
+                    modifiers,
                 };
                 if self.chrome_wants_pointer() {
-                    self.chrome_events.push(wheel);
+                    self.chrome_events.push(wheel(egui::TouchPhase::Move));
                     return;
                 }
                 let under = self.content_under();
-                if let Some(events) = self.internal_events(under) {
-                    events.push(wheel);
+                if fingers && let Some(window) = under.filter(|w| self.is_internal(*w)) {
+                    // Bracket finger scrolling in Start and End so apps can
+                    // follow it 1:1 and coast (mcsapi_ui::gesture).
+                    let now = self.now_ms();
+                    let ongoing = self.scroll.is_some_and(|(w, _)| w == window);
+                    if !ongoing {
+                        self.end_scroll();
+                    }
+                    let mut events = Vec::with_capacity(2);
+                    if !ongoing && !stop {
+                        events.push(egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::Vec2::ZERO,
+                            phase: egui::TouchPhase::Start,
+                            modifiers,
+                        });
+                    }
+                    events.push(wheel(if stop {
+                        egui::TouchPhase::End
+                    } else {
+                        egui::TouchPhase::Move
+                    }));
+                    self.scroll = (!stop).then_some((window, now));
+                    if stop && !ongoing {
+                        return;
+                    }
+                    self.internal_events(Some(window))
+                        .expect("checked above")
+                        .extend(events);
                     return;
                 }
-                let mut frame = AxisFrame::new(Event::time_msec(&event)).source(AxisSource::Wheel);
+                if let Some(events) = self.internal_events(under) {
+                    events.push(wheel(egui::TouchPhase::Move));
+                    return;
+                }
+                let mut frame = AxisFrame::new(Event::time_msec(&event)).source(source);
                 if h != 0.0 {
                     frame = frame.value(Axis::Horizontal, h);
                 }
                 if v != 0.0 {
                     frame = frame.value(Axis::Vertical, v);
                 }
+                if stop {
+                    frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.axis(self, frame);
                     pointer.frame(self);
                 }
             }
+            InputEvent::GestureSwipeBegin { event } => self.gesture(
+                GestureEvent::SwipeBegin {
+                    fingers: event.fingers(),
+                },
+                Event::time_msec(&event),
+            ),
+            InputEvent::GestureSwipeUpdate { event } => self.gesture(
+                GestureEvent::SwipeUpdate {
+                    delta: egui::vec2(event.delta_x() as f32, event.delta_y() as f32),
+                },
+                Event::time_msec(&event),
+            ),
+            InputEvent::GestureSwipeEnd { event } => self.gesture(
+                GestureEvent::SwipeEnd {
+                    cancelled: event.cancelled(),
+                },
+                Event::time_msec(&event),
+            ),
+            InputEvent::GesturePinchBegin { event } => self.gesture(
+                GestureEvent::PinchBegin {
+                    fingers: event.fingers(),
+                },
+                Event::time_msec(&event),
+            ),
+            InputEvent::GesturePinchUpdate { event } => self.gesture(
+                GestureEvent::PinchUpdate {
+                    delta: egui::vec2(event.delta_x() as f32, event.delta_y() as f32),
+                    scale: event.scale() as f32,
+                    rotation: (event.rotation() as f32).to_radians(),
+                },
+                Event::time_msec(&event),
+            ),
+            InputEvent::GesturePinchEnd { event } => self.gesture(
+                GestureEvent::PinchEnd {
+                    cancelled: event.cancelled(),
+                },
+                Event::time_msec(&event),
+            ),
+            InputEvent::GestureHoldBegin { event } => self.gesture(
+                GestureEvent::HoldBegin {
+                    fingers: event.fingers(),
+                },
+                Event::time_msec(&event),
+            ),
+            InputEvent::GestureHoldEnd { event } => self.gesture(
+                GestureEvent::HoldEnd {
+                    cancelled: event.cancelled(),
+                },
+                Event::time_msec(&event),
+            ),
+            _ => {}
+        }
+    }
+
+    fn is_internal(&self, window: WindowId) -> bool {
+        matches!(self.windows.get(&window), Some(Content::Internal { .. }))
+    }
+
+    /// Ends finger scrolling of an in-process app.
+    fn end_scroll(&mut self) {
+        let Some((window, _)) = self.scroll.take() else {
+            return;
+        };
+        let modifiers = self.egui_mods;
+        if let Some(events) = self.internal_events(Some(window)) {
+            events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::Vec2::ZERO,
+                phase: egui::TouchPhase::End,
+                modifiers,
+            });
+        }
+    }
+
+    /// Routes a touchpad gesture: the shell may take it at its begin;
+    /// otherwise it goes to the chrome or the content under the pointer, and
+    /// stays there until it ends.
+    fn gesture(&mut self, event: GestureEvent, time: u32) {
+        if event.is_begin() {
+            self.end_scroll();
+            self.gesture_bridge = EguiBridge::default();
+            self.gesture = Some(if self.shell.gesture(&event) {
+                GestureRoute::Shell
+            } else if self.chrome_wants_pointer() {
+                GestureRoute::Chrome
+            } else {
+                match self.content_under() {
+                    Some(window) if self.is_internal(window) => GestureRoute::Internal(window),
+                    _ => GestureRoute::Client,
+                }
+            });
+        }
+        let Some(route) = self.gesture else {
+            return;
+        };
+        if event.is_end() {
+            self.gesture = None;
+        }
+        match route {
+            GestureRoute::Shell => {
+                if !event.is_begin() {
+                    self.shell.gesture(&event);
+                }
+            }
+            GestureRoute::Chrome => {
+                let events = self.gesture_bridge.events(event, self.egui_mods);
+                self.chrome_events.extend(events);
+            }
+            GestureRoute::Internal(window) => {
+                let events = self.gesture_bridge.events(event, self.egui_mods);
+                if let Some(queue) = self.internal_events(Some(window)) {
+                    queue.extend(events);
+                }
+            }
+            GestureRoute::Client => self.client_gesture(event, time),
+        }
+    }
+
+    /// Forwards a gesture to the focused Wayland client
+    /// (`zwp_pointer_gestures_v1`).
+    fn client_gesture(&mut self, event: GestureEvent, time: u32) {
+        let Some(handle) = self.seat.get_pointer() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        let delta = |d: egui::Vec2| Point::from((f64::from(d.x), f64::from(d.y)));
+        match event {
+            GestureEvent::SwipeBegin { fingers } => handle.gesture_swipe_begin(
+                self,
+                &pointer::GestureSwipeBeginEvent {
+                    serial,
+                    time,
+                    fingers,
+                },
+            ),
+            GestureEvent::SwipeUpdate { delta: d } => handle.gesture_swipe_update(
+                self,
+                &pointer::GestureSwipeUpdateEvent {
+                    time,
+                    delta: delta(d),
+                },
+            ),
+            GestureEvent::SwipeEnd { cancelled } => handle.gesture_swipe_end(
+                self,
+                &pointer::GestureSwipeEndEvent {
+                    serial,
+                    time,
+                    cancelled,
+                },
+            ),
+            GestureEvent::PinchBegin { fingers } => handle.gesture_pinch_begin(
+                self,
+                &pointer::GesturePinchBeginEvent {
+                    serial,
+                    time,
+                    fingers,
+                },
+            ),
+            GestureEvent::PinchUpdate {
+                delta: d,
+                scale,
+                rotation,
+            } => handle.gesture_pinch_update(
+                self,
+                &pointer::GesturePinchUpdateEvent {
+                    time,
+                    delta: delta(d),
+                    scale: f64::from(scale),
+                    rotation: f64::from(rotation.to_degrees()),
+                },
+            ),
+            GestureEvent::PinchEnd { cancelled } => handle.gesture_pinch_end(
+                self,
+                &pointer::GesturePinchEndEvent {
+                    serial,
+                    time,
+                    cancelled,
+                },
+            ),
+            GestureEvent::HoldBegin { fingers } => handle.gesture_hold_begin(
+                self,
+                &pointer::GestureHoldBeginEvent {
+                    serial,
+                    time,
+                    fingers,
+                },
+            ),
+            GestureEvent::HoldEnd { cancelled } => handle.gesture_hold_end(
+                self,
+                &pointer::GestureHoldEndEvent {
+                    serial,
+                    time,
+                    cancelled,
+                },
+            ),
             _ => {}
         }
     }
@@ -817,6 +1078,12 @@ impl<S: Shell> Host<S> {
     /// content, then the chrome and the pointer.
     fn render(&mut self) {
         self.shell.tick();
+        if self
+            .scroll
+            .is_some_and(|(_, at)| self.now_ms().wrapping_sub(at) > SCROLL_IDLE_MS)
+        {
+            self.end_scroll();
+        }
         self.run_commands();
         self.sync();
         let size = self.backend.window_size();
@@ -1339,4 +1606,5 @@ delegate_xdg_decoration!(@<S: Shell + 'static> Host<S>);
 delegate_shm!(@<S: Shell + 'static> Host<S>);
 delegate_seat!(@<S: Shell + 'static> Host<S>);
 delegate_data_device!(@<S: Shell + 'static> Host<S>);
+delegate_pointer_gestures!(@<S: Shell + 'static> Host<S>);
 delegate_output!(@<S: Shell + 'static> Host<S>);

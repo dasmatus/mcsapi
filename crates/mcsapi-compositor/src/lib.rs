@@ -72,7 +72,7 @@ use std::fmt;
 
 use mcsapi::{Geometry, WindowId};
 pub use mcsapi_runtime::{AppId, InstanceId};
-pub use mcsapi_ui::{App, Theme, egui};
+pub use mcsapi_ui::{App, GestureEvent, Theme, egui};
 pub use smithay::input::keyboard::Keysym;
 use smithay::reexports::calloop::channel;
 
@@ -262,6 +262,14 @@ pub trait Shell: 'static {
     /// too, so clients never see half a shortcut.
     fn key(&mut self, _key: &KeyInput) -> KeyRoute {
         KeyRoute::Client
+    }
+
+    /// A touchpad gesture. Return `true` from a begin event to take the whole
+    /// gesture (for example three-finger swipes between workspaces); its later
+    /// events then all come here and the return value is ignored. Gestures
+    /// the shell leaves go to the chrome or the content under the pointer.
+    fn gesture(&mut self, _event: &GestureEvent) -> bool {
+        false
     }
 
     /// A client asked to change its window state.
