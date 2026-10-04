@@ -149,7 +149,10 @@
           checks =
             variantChecks
             // {
-              fmt = craneLib.cargoFmt { inherit (commonArgs) src pname version; };
+              fmt = craneLib.cargoFmt {
+                inherit (commonArgs) src pname version;
+                cargoExtraArgs = "--all";
+              };
               # The headless example CI runs after the tests.
               example-desktop = craneLib.mkCargoDerivation (
                 commonArgs
@@ -169,6 +172,10 @@
 
           devShells.default = craneLib.devShell {
             inherit (commonArgs) LD_LIBRARY_PATH;
+            # nixpkgs' rustc has no llvm-tools component; cargo-llvm-cov uses
+            # the LLVM rustc was built with instead.
+            LLVM_COV = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-cov";
+            LLVM_PROFDATA = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-profdata";
             inputsFrom = [ deps.gpui ];
             packages = with pkgs; [
               rust-analyzer
