@@ -3720,6 +3720,7 @@ dependencies = [
  "dioxus-devtools",
  "egui_glow",
  "glow 0.17.0",
+ "libc",
  "mcsapi",
  "mcsapi-runtime",
  "mcsapi-ui",

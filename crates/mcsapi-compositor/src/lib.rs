@@ -163,6 +163,7 @@ impl Edges {
 
 /// What a primary-button press handled by [`Shell::pointer_down`] did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Press {
     /// Forward the press (and the drag that follows) to the window content.
     Client,
@@ -199,6 +200,7 @@ pub struct KeyInput {
 
 /// Who receives a key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum KeyRoute {
     /// The shell consumed it (a shortcut).
     Consume,
@@ -210,6 +212,7 @@ pub enum KeyRoute {
 
 /// Work for the host, returned by [`Shell::take_commands`].
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Command {
     /// Launch an app: an in-process app if the [`Apps`] provider resolves
     /// the name, otherwise the program from [`Shell::spawn_argv`] with
@@ -223,6 +226,7 @@ pub enum Command {
 
 /// A request a client made about its own window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ClientRequest {
     /// Toggle maximized.
     Maximize,
@@ -280,9 +284,8 @@ pub trait Shell: 'static {
     /// Release of a press the shell handled.
     fn pointer_up(&mut self) {}
 
-    /// Decides who gets a key. Called for presses and for releases of keys
-    /// whose press was not consumed; releasing a consumed key is consumed
-    /// too, so clients never see half a shortcut.
+    /// Decides who gets a key. Called for every press and release. Releases
+    /// of consumed presses are still offered here, but remain hidden from clients.
     fn key(&mut self, _key: &KeyInput) -> KeyRoute {
         KeyRoute::Client
     }
