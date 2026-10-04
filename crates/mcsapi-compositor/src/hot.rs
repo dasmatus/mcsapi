@@ -163,6 +163,10 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::spawn_argv, &mut self.0, app)
     }
 
+    fn set_reserved(&mut self, reserved: crate::Reserved) {
+        hot!(S::set_reserved, &mut self.0, reserved)
+    }
+
     fn take_commands(&mut self) -> Vec<Command> {
         hot!(S::take_commands, &mut self.0)
     }
