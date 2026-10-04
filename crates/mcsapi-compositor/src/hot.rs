@@ -24,7 +24,7 @@ macro_rules! hot {
 
 /// A [`Shell`] whose methods are hot-patched in debug builds.
 ///
-/// Wrap the shell with it and run the binary under `dx serve --hotpatch`
+/// Wrap the shell with it and run the binary under `dx serve --hot-patch`
 /// with the `hotpatch` feature: editing a `Shell` method in the binary's own
 /// crate (an example or `main.rs`) swaps in the new code on save, while the
 /// nested window, its Wayland clients and the shell's state stay alive.
