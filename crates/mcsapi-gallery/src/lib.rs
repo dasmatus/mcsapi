@@ -25,6 +25,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "gpui")]
+pub mod gpui_gallery;
 mod specimens;
 
 use egui::{Color32, RichText, Ui};
@@ -93,7 +95,7 @@ pub struct Specimen {
 }
 
 impl Specimen {
-    fn matches(&self, query: &str) -> bool {
+    pub(crate) fn matches(&self, query: &str) -> bool {
         let query = query.trim().to_lowercase();
         query.is_empty()
             || self.name.to_lowercase().contains(&query)

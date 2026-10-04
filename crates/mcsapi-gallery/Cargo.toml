@@ -13,13 +13,14 @@ egui.workspace = true
 mcsapi.workspace = true
 mcsapi-components.workspace = true
 mcsapi-ui.workspace = true
-eframe = { workspace = true, optional = true }
+gpui = { workspace = true, optional = true }
+mcsapi-components-gpui = { workspace = true, optional = true }
 
 [features]
-# A desktop window that runs the gallery through eframe. Off by default to keep
-# CI free of windowing dependencies.
-preview = ["dep:eframe"]
+# The gallery window, drawn with GPUI. Off by default so CI and library users
+# do not build GPUI and its Wayland and Vulkan system libraries.
+gpui = ["dep:gpui", "mcsapi/gpui", "mcsapi-components-gpui/gpui"]
 
 [[bin]]
 name = "mcsapi-gallery"
-required-features = ["preview"]
+required-features = ["gpui"]

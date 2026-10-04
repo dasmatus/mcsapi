@@ -14,8 +14,8 @@ mcsapi = { path = "crates/mcsapi", version = "0.1.0" }
 mcsapi-ui = { path = "crates/mcsapi-ui", version = "0.1.0" }
 mcsapi-runtime = { path = "crates/mcsapi-runtime", version = "0.1.0" }
 mcsapi-components = { path = "crates/mcsapi-components", version = "0.1.0" }
+mcsapi-components-gpui = { path = "crates/mcsapi-components-gpui", version = "0.1.0" }
 egui = "0.36.2"
-eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 serde_json = "1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 gpui = { version = "0.2.2", default-features = false, features = ["wayland"] }

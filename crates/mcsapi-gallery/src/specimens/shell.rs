@@ -9,8 +9,8 @@ pub(super) const SPECIMENS: &[Specimen] = &[Specimen {
     name: "Workspace Bar",
     category: Category::Shell,
     source: "mcsapi",
-    summary: "The shell's workspace switcher. GPUI hosts draw the same bar with gpui_workspace_bar.",
-    api: &["egui_workspace_bar"],
+    summary: "The shell's workspace switcher, from mcsapi::widgets: gpui_workspace_bar for GPUI hosts, egui_workspace_bar for egui ones.",
+    api: &["gpui_workspace_bar", "egui_workspace_bar"],
     show: workspace_bar,
 }];
 
