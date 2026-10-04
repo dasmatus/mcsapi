@@ -14,6 +14,25 @@ const BOUNDS: Rect = Rect {
 };
 
 #[test]
+fn oversized_requests_are_refused() {
+    let many = mcsapi_mcp::MAX_ITEMS + 1;
+    let error = simulate(&SimulateRequest {
+        workspaces: vec![1],
+        operations: vec![Operation::FocusNext; many],
+        bounds: None,
+    })
+    .unwrap_err();
+    assert!(error.contains("operations"), "{error}");
+    let error = arrange(&ArrangeRequest {
+        layout: LayoutName::Tall,
+        bounds: BOUNDS,
+        windows: (1..=many as u64).collect(),
+    })
+    .unwrap_err();
+    assert!(error.contains("windows"), "{error}");
+}
+
+#[test]
 fn simulate_replays_operations_on_a_fresh_desktop() {
     let snapshot = simulate(&SimulateRequest {
         workspaces: vec![1, 2],
