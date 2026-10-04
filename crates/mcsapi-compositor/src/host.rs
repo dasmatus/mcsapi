@@ -619,7 +619,7 @@ impl<S: Shell> Host<S> {
         // A window the shell takes away mid-press (a lock screen hiding
         // everything, a workspace switch) must not keep receiving the rest
         // of that press through the click grab.
-        if unmapped && self.route == Some(Route::Content) {
+        if unmapped && matches!(self.route, Some(Route::Content(_))) {
             self.cancel_pointer_route();
         }
         for p in &placements {
@@ -675,10 +675,9 @@ impl<S: Shell> Host<S> {
     /// and in-process apps see the pointer go.
     fn cancel_pointer_route(&mut self) {
         self.route = Some(Route::Chrome);
-        for content in self.windows.values_mut() {
-            if let Content::Internal { events, .. } = content {
-                events.push(egui::Event::PointerGone);
-            }
+        let target = self.pointer_target.take();
+        if let Some(events) = self.internal_events(target) {
+            events.push(egui::Event::PointerGone);
         }
         if let Some(pointer) = self.seat.get_pointer() {
             let serial = SERIAL_COUNTER.next_serial();
