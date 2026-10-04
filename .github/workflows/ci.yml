@@ -21,8 +21,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
-  # Packages Smithay needs for the default build.
-  BASE_PACKAGES: libxkbcommon-dev pkg-config
+  # Packages Smithay needs for the default build and the bare-seat `kms`
+  # feature (libinput, udev, GBM, libseat, libdrm).
+  BASE_PACKAGES: libxkbcommon-dev pkg-config libinput-dev libudev-dev libgbm-dev libseat-dev libdrm-dev
   # Extra packages the native Wayland GPUI integration needs.
   GPUI_PACKAGES: >-
     libwayland-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev
@@ -62,7 +63,7 @@ jobs:
       - name: Clippy
         run: >-
           cargo clippy --locked --workspace --all-targets
-          --features mcsapi-compositor/hotpatch
+          --features mcsapi-compositor/hotpatch,mcsapi-compositor/kms
           ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
           -- -D warnings
 
@@ -98,11 +99,11 @@ jobs:
           key: ${{ matrix.toolchain }}-${{ matrix.features }}
       - name: Build
         run: >-
-          cargo build --locked --workspace --all-targets
+          cargo build --locked --workspace --all-targets --features mcsapi-compositor/kms
           ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
       - name: Test
         run: >-
-          cargo test --locked --workspace --all-targets
+          cargo test --locked --workspace --all-targets --features mcsapi-compositor/kms
           ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
       - name: Doc tests
         run: >-

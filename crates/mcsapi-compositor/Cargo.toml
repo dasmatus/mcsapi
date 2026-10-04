@@ -19,5 +19,16 @@ smithay = { workspace = true, features = ["backend_winit", "desktop", "renderer_
 subsecond = { version = "0.7.10", optional = true }
 
 [features]
+# Run on the bare seat when there is no session to nest in: DRM/KMS output,
+# libinput input, and the seat through libseat (logind or seatd). Needs
+# libdrm, libgbm, libinput, libudev and libseat.
+kms = [
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/backend_egl",
+    "smithay/backend_libinput",
+    "smithay/backend_session_libseat",
+    "smithay/backend_udev",
+]
 # Hot-patch a `Hot`-wrapped shell from `dx serve --hot-patch` in debug builds.
 hotpatch = ["dep:dioxus-devtools", "dep:subsecond"]

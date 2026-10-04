@@ -18,6 +18,7 @@ use std::{
 use mcsapi::WindowId;
 use smithay::{
     backend::{
+        allocator::Fourcc,
         egl,
         input::{
             AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent as _,
@@ -26,11 +27,11 @@ use smithay::{
             PointerButtonEvent,
         },
         renderer::{
-            Color32F, Frame, Renderer,
+            Bind, Color32F, Frame, Offscreen, Renderer, Texture,
             element::{
                 AsRenderElements, Element, RenderElement, surface::WaylandSurfaceRenderElement,
             },
-            gles::GlesRenderer,
+            gles::{GlesRenderer, GlesTexture},
             utils::on_commit_buffer_handler,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
@@ -61,7 +62,10 @@ use smithay::{
         },
         winit::{dpi::LogicalSize, window::Window as WinitWindow},
     },
-    utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Scale, Serial, Size, Transform},
+    utils::{
+        Buffer as BufferCoord, Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Scale, Serial,
+        Size, Transform,
+    },
     wayland::{
         buffer::BufferHandler,
         compositor::{
@@ -271,7 +275,9 @@ pub(crate) struct Host<S: Shell> {
     seat: Seat<Self>,
     space: Space<Window>,
     output: Output,
-    backend: WinitGraphicsBackend<GlesRenderer>,
+    backend: Backend,
+    /// The offscreen frame, when [`Backend::offscreen`].
+    scene: Option<GlesTexture>,
     gl: Option<Arc<glow::Context>>,
     retired: Vec<egui_glow::Painter>,
     blurrer: Option<blur::Blurrer>,
@@ -321,6 +327,80 @@ impl ClientData for ClientState {
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
 }
 
+/// Where frames go and input comes from.
+enum Backend {
+    /// A window of another Wayland or X11 session.
+    Winit(Box<WinitGraphicsBackend<GlesRenderer>>),
+    /// The bare seat: DRM/KMS, libinput and libseat.
+    #[cfg(feature = "kms")]
+    Kms(Box<crate::kms::Kms>),
+}
+
+impl Backend {
+    fn size(&self) -> Size<i32, Physical> {
+        match self {
+            Self::Winit(b) => b.window_size(),
+            #[cfg(feature = "kms")]
+            Self::Kms(k) => k.size(),
+        }
+    }
+
+    fn renderer(&mut self) -> &mut GlesRenderer {
+        match self {
+            Self::Winit(b) => b.renderer(),
+            #[cfg(feature = "kms")]
+            Self::Kms(k) => &mut k.renderer,
+        }
+    }
+
+    /// The refresh rate of the monitor showing the session window, checked
+    /// again each time (the window can move between monitors). `None` on the
+    /// bare seat, where the mode is the refresh rate and never changes.
+    fn monitor_refresh(&self) -> Option<u32> {
+        match self {
+            Self::Winit(b) => Some(
+                b.window()
+                    .current_monitor()
+                    .and_then(|m| m.refresh_rate_millihertz())
+                    .filter(|&r| r >= 1_000)
+                    .unwrap_or(60_000),
+            ),
+            #[cfg(feature = "kms")]
+            Self::Kms(_) => None,
+        }
+    }
+
+    /// Whether a frame may be drawn now: on the bare seat, only while the
+    /// seat is ours and the last frame has reached the screen.
+    fn can_draw(&self) -> bool {
+        match self {
+            Self::Winit(_) => true,
+            #[cfg(feature = "kms")]
+            Self::Kms(k) => k.can_draw(),
+        }
+    }
+
+    /// Whether the frame is drawn into an offscreen texture and copied to the
+    /// screen afterwards (see `kms.rs`). Always on the bare seat; in a window
+    /// only with `MCSAPI_OFFSCREEN=1`, which exercises the same path where it
+    /// can be looked at.
+    fn offscreen(&self) -> bool {
+        match self {
+            Self::Winit(_) => std::env::var_os("MCSAPI_OFFSCREEN").is_some_and(|v| v == "1"),
+            #[cfg(feature = "kms")]
+            Self::Kms(_) => true,
+        }
+    }
+}
+
+/// How the offscreen frame is turned when it is copied to the screen. It was
+/// drawn as for a window, with raw GL painting row 0 at the bottom, and
+/// smithay reads a texture with row 0 at the top, so the copy flips it back.
+/// The frame's own transform (flipped for a window, normal for a scanout
+/// buffer) accounts for the target, so the same flip serves both, and
+/// `MCSAPI_OFFSCREEN=1` in a window shows what the bare seat will.
+const OFFSCREEN_COPY: Transform = Transform::Flipped180;
+
 pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
     let Compositor {
         shell,
@@ -335,14 +415,37 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
     let display: Display<Host<S>> = Display::new()?;
     let dh = display.handle();
 
-    let (backend, winit_loop) = winit::init_from_attributes::<GlesRenderer>(
-        WinitWindow::default_attributes()
-            .with_title(title)
-            .with_inner_size(LogicalSize::new(w, h))
-            .with_visible(true),
-    )
-    .map_err(|e| format!("cannot open a window for the session: {e}"))?;
-    let size = backend.window_size();
+    #[cfg(feature = "kms")]
+    let mut kms_sources = None;
+    #[cfg(feature = "kms")]
+    let kms = crate::kms::wanted();
+    #[cfg(not(feature = "kms"))]
+    let kms = false;
+    let (backend, winit_loop) = if kms {
+        #[cfg(feature = "kms")]
+        {
+            let (kms, sources) = crate::kms::Kms::open()?;
+            kms_sources = Some(sources);
+            (Backend::Kms(Box::new(kms)), None)
+        }
+        #[cfg(not(feature = "kms"))]
+        unreachable!()
+    } else {
+        let (backend, events) = winit::init_from_attributes::<GlesRenderer>(
+            WinitWindow::default_attributes()
+                .with_title(title)
+                .with_inner_size(LogicalSize::new(w, h))
+                .with_visible(true),
+        )
+        .map_err(|e| format!("cannot open a window for the session: {e}"))?;
+        (Backend::Winit(Box::new(backend)), Some(events))
+    };
+    let size = backend.size();
+    let refresh_mhz = match &backend {
+        #[cfg(feature = "kms")]
+        Backend::Kms(k) => k.refresh_mhz(),
+        _ => 60_000,
+    };
 
     let output = Output::new(
         "mcsapi-0".into(),
@@ -350,13 +453,13 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
             make: "mcsapi".into(),
-            model: "nested".into(),
+            model: if kms { "display" } else { "nested" }.into(),
         },
     );
     let _global = output.create_global::<Host<S>>(&dh);
     let mode = OutputMode {
         size,
-        refresh: 60_000,
+        refresh: refresh_mhz as i32,
     };
     output.change_current_state(
         Some(mode),
@@ -413,12 +516,13 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         space,
         output,
         backend,
+        scene: None,
         gl: None,
         retired: Vec::new(),
         blurrer: None,
         blur_unavailable: false,
         vrr,
-        refresh_mhz: 60_000,
+        refresh_mhz,
         timing_checked: None,
         shell,
         apps,
@@ -444,9 +548,36 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
     host.shell
         .session_started(&host.socket_name.to_string_lossy());
 
-    event_loop
-        .handle()
-        .insert_source(winit_loop, |event, _, host| host.winit_event(event))?;
+    if let Some(winit_loop) = winit_loop {
+        event_loop
+            .handle()
+            .insert_source(winit_loop, |event, _, host| host.winit_event(event))?;
+    }
+    #[cfg(feature = "kms")]
+    if let Some(sources) = kms_sources {
+        use smithay::backend::{drm::DrmEvent, session::Event as SessionEvent};
+        let handle = event_loop.handle();
+        handle.insert_source(sources.input, |event, _, host| {
+            host.input(event);
+            host.run_commands();
+        })?;
+        handle.insert_source(sources.drm, |event, _, host| match event {
+            DrmEvent::VBlank(crtc) => {
+                if let Backend::Kms(k) = &mut host.backend {
+                    k.vblank(crtc);
+                }
+            }
+            DrmEvent::Error(e) => eprintln!("mcsapi-compositor: DRM error: {e}"),
+        })?;
+        handle.insert_source(sources.session, |event, _, host| {
+            if let Backend::Kms(k) = &mut host.backend {
+                match event {
+                    SessionEvent::PauseSession => k.pause(),
+                    SessionEvent::ActivateSession => k.resume(),
+                }
+            }
+        })?;
+    }
     if let Some(jobs) = jobs {
         event_loop.handle().insert_source(jobs, |event, _, host| {
             if let channel::Event::Msg(job) = event {
@@ -782,8 +913,17 @@ impl<S: Shell> Host<S> {
                 );
             }
             InputEvent::PointerMotionAbsolute { event } => {
-                let size = self.backend.window_size();
+                let size = self.backend.size();
                 self.pointer = event.position_transformed((size.w, size.h).into());
+                self.pointer_motion(Event::time_msec(&event));
+            }
+            // A mouse or touchpad on the bare seat moves the pointer by
+            // deltas; keep it on the output.
+            InputEvent::PointerMotion { event } => {
+                let size = self.backend.size();
+                let delta = smithay::backend::input::PointerMotionEvent::delta(&event);
+                self.pointer.x = (self.pointer.x + delta.x).clamp(0.0, f64::from(size.w - 1));
+                self.pointer.y = (self.pointer.y + delta.y).clamp(0.0, f64::from(size.h - 1));
                 self.pointer_motion(Event::time_msec(&event));
             }
             InputEvent::PointerButton { event } => {
@@ -1235,6 +1375,19 @@ impl<S: Shell> Host<S> {
             command: modifiers.ctrl,
         };
         let modified = handle.modified_sym();
+        // Ctrl+Alt+F1–F12 on the bare seat: nothing else switches VTs once
+        // the compositor owns the keyboard.
+        #[cfg(feature = "kms")]
+        if let Backend::Kms(k) = &mut self.backend {
+            let first = Keysym::XF86_Switch_VT_1.raw();
+            let raw = modified.raw();
+            if (first..first + 12).contains(&raw) {
+                if pressed {
+                    k.change_vt((raw - first + 1) as i32);
+                }
+                return FilterResult::Intercept(());
+            }
+        }
         let sym = handle
             .raw_latin_sym_or_raw_current_sym()
             .unwrap_or(modified);
@@ -1306,13 +1459,10 @@ impl<S: Shell> Host<S> {
             return;
         }
         self.timing_checked = Some(Instant::now());
-        let refresh = self
-            .backend
-            .window()
-            .current_monitor()
-            .and_then(|m| m.refresh_rate_millihertz())
-            .filter(|&r| r >= 1_000)
-            .unwrap_or(60_000);
+        // On the bare seat the mode is the refresh rate, set when it opened.
+        let Some(refresh) = self.backend.monitor_refresh() else {
+            return;
+        };
         if refresh != self.refresh_mhz {
             self.refresh_mhz = refresh;
             if let Some(mode) = self.output.current_mode() {
@@ -1330,6 +1480,10 @@ impl<S: Shell> Host<S> {
     /// Draws one frame: background, then per window its decoration and
     /// content, then the chrome and the pointer.
     fn render(&mut self) {
+        if !self.backend.can_draw() {
+            self.run_commands();
+            return;
+        }
         self.update_refresh();
         self.shell.tick();
         if self
@@ -1340,7 +1494,7 @@ impl<S: Shell> Host<S> {
         }
         self.run_commands();
         self.sync();
-        let size = self.backend.window_size();
+        let size = self.backend.size();
         let screen =
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.w as f32, size.h as f32));
         let elapsed = self.now_ms();
@@ -1508,7 +1662,25 @@ impl<S: Shell> Host<S> {
         let screen_px = [size.w as u32, size.h as u32];
         let full = Rectangle::from_size(size);
 
-        let (renderer, mut framebuffer) = self.backend.bind()?;
+        let offscreen = self.backend.offscreen();
+        let buffer_size = Size::<i32, BufferCoord>::from((size.w, size.h));
+        if offscreen && self.scene.as_ref().is_none_or(|t| t.size() != buffer_size) {
+            self.scene = Some(Offscreen::<GlesTexture>::create_buffer(
+                self.backend.renderer(),
+                Fourcc::Abgr8888,
+                buffer_size,
+            )?);
+        }
+        let (renderer, mut framebuffer) = match (&mut self.backend, &mut self.scene) {
+            (backend, Some(scene)) if offscreen => {
+                let renderer = backend.renderer();
+                let framebuffer = renderer.bind(scene)?;
+                (renderer, framebuffer)
+            }
+            (Backend::Winit(backend), _) => backend.bind()?,
+            #[cfg(feature = "kms")]
+            (Backend::Kms(_), _) => unreachable!("the bare seat always draws offscreen"),
+        };
         let gl = match &self.gl {
             Some(gl) => gl.clone(),
             None => {
@@ -1617,7 +1789,65 @@ impl<S: Shell> Host<S> {
         paint(&gl, chrome_painter, screen_px, &mut chrome);
         let _sync = frame.finish()?;
         drop(framebuffer);
-        self.backend.submit(Some(&[full]))?;
+        if offscreen {
+            return self.present(size);
+        }
+        match &mut self.backend {
+            Backend::Winit(backend) => backend.submit(Some(&[full]))?,
+            #[cfg(feature = "kms")]
+            Backend::Kms(_) => {}
+        }
+        Ok(())
+    }
+
+    /// Copies the offscreen frame to the screen.
+    fn present(&mut self, size: Size<i32, Physical>) -> Result {
+        let full = Rectangle::from_size(size);
+        let Some(scene) = &self.scene else {
+            return Ok(());
+        };
+        let src = Rectangle::from_size(scene.size()).to_f64();
+        match &mut self.backend {
+            Backend::Winit(backend) => {
+                let (renderer, mut framebuffer) = backend.bind()?;
+                let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
+                Frame::render_texture_from_to(
+                    &mut frame,
+                    scene,
+                    src,
+                    full,
+                    &[full],
+                    &[],
+                    OFFSCREEN_COPY,
+                    1.0,
+                )?;
+                let _sync = frame.finish()?;
+                drop(framebuffer);
+                backend.submit(Some(&[full]))?;
+            }
+            #[cfg(feature = "kms")]
+            Backend::Kms(k) => {
+                let (mut dmabuf, _age) = k.surface.next_buffer()?;
+                let mut framebuffer = k.renderer.bind(&mut dmabuf)?;
+                let mut frame = k
+                    .renderer
+                    .render(&mut framebuffer, size, Transform::Normal)?;
+                Frame::render_texture_from_to(
+                    &mut frame,
+                    scene,
+                    src,
+                    full,
+                    &[full],
+                    &[],
+                    OFFSCREEN_COPY,
+                    1.0,
+                )?;
+                let sync = frame.finish()?;
+                drop(framebuffer);
+                k.surface.queue_buffer(Some(sync), Some(vec![full]), ())?;
+                k.frame_pending = true;
+            }
+        }
         Ok(())
     }
 
