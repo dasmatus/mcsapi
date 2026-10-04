@@ -772,6 +772,9 @@ impl<S: Shell> Host<S> {
         }
         if self.buttons == 0 {
             self.route = None;
+            if !pressed {
+                self.pointer_motion(time);
+            }
         }
     }
 
