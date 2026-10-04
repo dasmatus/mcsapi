@@ -272,18 +272,40 @@ pub(crate) fn parse(
                 .unwrap_or_else(|| text.parse::<Color>())
                 .map_err(|e| error(e.to_string()))
         };
-        let family = || {
+        // Names end up as lines of GTK's settings.ini and in environment
+        // variables, where a line break would let a downloaded theme add
+        // settings of its own (`gtk-modules=` loads code into every GTK app).
+        let single_line = || {
             let text = text()?;
+            if text.chars().any(char::is_control) {
+                Err(error(
+                    "must not contain line breaks or control characters".to_owned(),
+                ))
+            } else {
+                Ok(text.to_owned())
+            }
+        };
+        let family = || {
+            let text = single_line()?;
             if text.trim().is_empty() {
                 Err(error("must name a font family".to_owned()))
             } else {
-                Ok(text.to_owned())
+                Ok(text)
+            }
+        };
+        // Icon and cursor themes are directory names under icons/.
+        let directory = || {
+            let text = single_line()?;
+            if text.is_empty() || text.contains('/') || text == "." || text == ".." {
+                Err(error("must be an icon theme directory name".to_owned()))
+            } else {
+                Ok(text)
             }
         };
         let palette = &mut theme.palette;
         match (section.as_str(), key.as_str()) {
             ("", "inherits") => {}
-            ("", "name") => theme.name = text()?.to_owned(),
+            ("", "name") => theme.name = single_line()?,
             ("", "scheme") => {
                 theme.scheme = Scheme::parse(text()?)
                     .ok_or_else(|| error("must be \"dark\" or \"light\"".to_owned()))?;
@@ -304,8 +326,8 @@ pub(crate) fn parse(
             ("fonts", "size") => theme.fonts.size = number(6.0, 72.0)? as f32,
             ("fonts", "small_size") => theme.fonts.small_size = number(6.0, 72.0)? as f32,
             ("fonts", "monospace_size") => theme.fonts.monospace_size = number(6.0, 72.0)? as f32,
-            ("icons", "theme") => theme.icons.theme = text()?.to_owned(),
-            ("icons", "cursor") => theme.icons.cursor = text()?.to_owned(),
+            ("icons", "theme") => theme.icons.theme = directory()?,
+            ("icons", "cursor") => theme.icons.cursor = directory()?,
             ("icons", "cursor_size") => theme.icons.cursor_size = integer(8.0, 256.0)? as u16,
             ("shape", "radius") => theme.radius = integer(0.0, 32.0)? as u8,
             _ => warnings.push(Warning {

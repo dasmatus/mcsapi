@@ -230,3 +230,38 @@ fn exports_carry_the_theme() {
     // parser to read; the CI job for consumers checks it with a real one.
     assert_eq!(json.matches('{').count(), json.matches('}').count());
 }
+
+#[test]
+fn names_cannot_inject_lines_into_exports() {
+    // A downloaded theme trying to add `gtk-modules=` to settings.ini.
+    for key in [
+        "[icons]\ntheme",
+        "[icons]\ncursor",
+        "[fonts]\nsans",
+        "[fonts]\nmonospace",
+        "name",
+    ] {
+        let text = format!("{key} = \"Adwaita\\ngtk-modules=evil\"\n");
+        assert!(Theme::parse(&text, |_| None).is_err(), "{key}");
+    }
+    for bad in ["../../etc", "a/b", ".."] {
+        let text = format!("[icons]\ntheme = \"{bad}\"\n");
+        assert!(Theme::parse(&text, |_| None).is_err(), "{bad}");
+    }
+    // A theme built in code is cleaned on the way out instead.
+    let mut theme = Theme::dark();
+    theme.icons.theme = "Adwaita\ngtk-modules=evil".to_owned();
+    theme.fonts.sans = "Ubuntu\r\ngtk-modules=evil".to_owned();
+    theme.icons.cursor = "x\ny".to_owned();
+    let ini = export::gtk_settings(&theme);
+    assert_eq!(
+        ini.lines().filter(|l| l.starts_with("gtk-modules")).count(),
+        0
+    );
+    assert_eq!(ini.lines().count(), 6);
+    assert!(
+        export::environment(&theme)
+            .iter()
+            .all(|(_, v)| !v.contains('\n'))
+    );
+}

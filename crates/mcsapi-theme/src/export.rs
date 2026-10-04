@@ -55,6 +55,14 @@ pub fn portal(theme: &Theme) -> Portal {
     }
 }
 
+/// `text` without control characters, for line-based formats and the
+/// environment. Theme files cannot contain them (the parser rejects them), but
+/// a [`Theme`] built in code can, and one injected line in settings.ini is
+/// enough to load a GTK module into every GTK app.
+fn single_line(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// GTK font size in points from a size in logical pixels (96 per inch).
 fn points(pixels: f32) -> f32 {
     (pixels * 0.75 * 2.0).round() / 2.0
@@ -71,10 +79,10 @@ pub fn gtk_settings(theme: &Theme) -> String {
          gtk-cursor-theme-size={cursor_size}\n\
          gtk-font-name={font} {size}\n",
         dark = u8::from(theme.scheme == Scheme::Dark),
-        icons = theme.icons.theme,
-        cursor = theme.icons.cursor,
+        icons = single_line(&theme.icons.theme),
+        cursor = single_line(&theme.icons.cursor),
         cursor_size = theme.icons.cursor_size,
-        font = theme.fonts.sans,
+        font = single_line(&theme.fonts.sans),
         size = points(theme.fonts.size),
     )
 }
@@ -83,7 +91,7 @@ pub fn gtk_settings(theme: &Theme) -> String {
 /// which X11 and Wayland clients read through libXcursor and libwayland-cursor.
 pub fn environment(theme: &Theme) -> [(&'static str, String); 2] {
     [
-        ("XCURSOR_THEME", theme.icons.cursor.clone()),
+        ("XCURSOR_THEME", single_line(&theme.icons.cursor)),
         ("XCURSOR_SIZE", theme.icons.cursor_size.to_string()),
     ]
 }
