@@ -2100,7 +2100,8 @@ fn read_frame(gl: &glow::Context, [w, h]: [u32; 2]) -> Capture {
     // GL rows run bottom to top; the framebuffer's alpha is meaningless.
     let mut flipped = Vec::with_capacity(rgba.len());
     for line in rgba.chunks_exact(row).rev() {
-        flipped.extend(line.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2], 255]));
+        let (pixels, _) = line.as_chunks::<4>();
+        flipped.extend(pixels.iter().flat_map(|p| [p[0], p[1], p[2], 255]));
     }
     Capture {
         width: w,
