@@ -40,8 +40,14 @@ pub(crate) struct GlRect {
 pub(crate) fn regions(blur: &Blur, screen: [u32; 2]) -> Option<(GlRect, GlRect)> {
     let (sw, sh) = (screen[0] as i32, screen[1] as i32);
     let g = blur.area;
-    let (x0, x1) = (g.loc.x.max(0), (g.loc.x + g.size.w).min(sw));
-    let (top, bottom) = (g.loc.y.max(0), (g.loc.y + g.size.h).min(sh));
+    let (x0, x1) = (
+        g.loc.x.max(0),
+        g.loc.x.saturating_add(g.size.w).min(sw),
+    );
+    let (top, bottom) = (
+        g.loc.y.max(0),
+        g.loc.y.saturating_add(g.size.h).min(sh),
+    );
     if x1 <= x0 || bottom <= top {
         return None;
     }
