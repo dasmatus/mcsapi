@@ -23,6 +23,16 @@ updates:
       prefix: "deps(cargo)"
     cooldown:
       default-days: 3
+    # accesskit and glow types cross the egui/egui_glow API boundary, so they
+    # must stay on the versions egui 0.36 uses (accesskit 0.24, glow 0.17).
+    # Lift these once an egui release moves; bump all of them together then.
+    ignore:
+      - dependency-name: "accesskit"
+        versions: [">=0.25"]
+      - dependency-name: "accesskit_unix"
+        versions: [">=0.23"]
+      - dependency-name: "glow"
+        versions: [">=0.18"]
     groups:
       cargo-minor-patch:
         applies-to: version-updates
