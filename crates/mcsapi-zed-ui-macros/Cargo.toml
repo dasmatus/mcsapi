@@ -11,6 +11,9 @@ repository.workspace = true
 [lib]
 name = "ui_macros"
 path = "src/ui_macros.rs"
+# As in Zed: the doc examples name crates and derives these copies do not
+# depend on, so they are documentation, not tests.
+doctest = false
 proc-macro = true
 test = false
 

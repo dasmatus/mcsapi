@@ -11,6 +11,9 @@ repository.workspace = true
 [lib]
 name = "component"
 path = "src/component.rs"
+# As in Zed: the doc examples name crates and derives these copies do not
+# depend on, so they are documentation, not tests.
+doctest = false
 test = false
 
 [dependencies]

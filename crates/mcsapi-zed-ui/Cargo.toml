@@ -13,6 +13,9 @@ repository.workspace = true
 [lib]
 name = "ui"
 path = "src/ui.rs"
+# As in Zed: the doc examples name crates and derives these copies do not
+# depend on, so they are documentation, not tests.
+doctest = false
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
