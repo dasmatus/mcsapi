@@ -31,3 +31,6 @@ gpui = [
     "mcsapi-zed-theme/gpui",
     "mcsapi-zed-ui/gpui",
 ]
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

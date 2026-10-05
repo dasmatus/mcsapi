@@ -1588,6 +1588,14 @@ mod tests {
         "TextInput",
         "bind_text_input_keys",
         "Handler",
+        // The gallery's application serves its icons from `Assets`, and
+        // `install_theme` is `Tokens::install` with fonts. `ui` and `theme`
+        // re-export Zed's crates, whose components the specimens draw
+        // through the wrappers above.
+        "Assets",
+        "install_theme",
+        "ui",
+        "theme",
     ];
 
     #[test]
