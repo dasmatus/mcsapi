@@ -21,9 +21,11 @@
 //! its decoration and its content, then blurs the areas under translucent
 //! panels ([`Shell::blur_regions`]), then the chrome. Frames come every
 //! [`Shell::frame_interval`], by default once per refresh of the monitor the
-//! session window is on. The session runs nested
-//! in a window of the current X11 or Wayland session (Smithay's winit
-//! backend); a DRM/KMS backend is future work.
+//! session window is on. The session runs nested in a window of the current
+//! X11 or Wayland session (Smithay's winit backend), or, with the `kms`
+//! feature, on the bare seat: DRM/KMS output, libinput input and seat access
+//! through libseat. The bare seat is picked when there is no session to nest
+//! in, or with `MCSAPI_BACKEND=kms`; `MCSAPI_BACKEND=winit` forces nesting.
 //!
 //! ```no_run
 //! use mcsapi::{Desktop, WindowId, WorkspaceId};
@@ -80,6 +82,8 @@ mod atspi;
 mod blur;
 mod host;
 mod hot;
+#[cfg(feature = "kms")]
+mod kms;
 mod runtime;
 
 use std::{fmt, time::Duration};

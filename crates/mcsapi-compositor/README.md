@@ -15,7 +15,15 @@ Windows come from two places, and get the same decorations, tiling and focus:
 Supported today: xdg-shell toplevels and popups, xdg-decoration, wl_shm,
 seat (keyboard and pointer), data device (clipboard), wl_output/xdg-output.
 The session runs nested in a window of the current X11 or Wayland session
-(Smithay's winit backend, GLES renderer, egui painted with `egui_glow`).
+(Smithay's winit backend, GLES renderer, egui painted with `egui_glow`), or,
+with the `kms` feature, on the bare seat: the first connected display at its
+preferred mode through DRM/KMS and GBM, input from libinput, and the GPU and
+input devices taken through libseat (logind or seatd) and given back on a VT
+switch (Ctrl+Alt+F1–F12). The bare seat is used when neither `WAYLAND_DISPLAY`
+nor `DISPLAY` is set; `MCSAPI_BACKEND=kms` or `=winit` decides instead. On the
+bare seat each frame is drawn offscreen and copied to the scanout buffer, so
+every layer comes out the same as nested; `MCSAPI_OFFSCREEN=1` takes the same
+path in a window, to compare the two.
 
 Effects: shells can ask for frosted-glass panels by returning areas from
 `Shell::blur_regions`; the host blurs what is behind them (dual Kawase, with
@@ -44,8 +52,8 @@ Capture queued after them sees their result. While one runs,
 `Shell::input_source(true)` tells the shell the input is synthetic, so it
 can refuse to let an agent confirm what only a person should.
 
-Not yet: a DRM/KMS + libinput backend for running on a bare TTY,
-layer-shell, XWayland, popup grabs, linux-dmabuf.
+Not yet: more than one display on the bare seat, hotplug, direct scanout of
+client buffers, layer-shell, XWayland, popup grabs, linux-dmabuf.
 
 ## Try it
 
