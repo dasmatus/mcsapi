@@ -33,8 +33,9 @@ env:
     libwayland-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev
     libvulkan-dev
   # mcsapi-hardened-malloc links the system's libhardened_malloc.so, which
-  # Ubuntu does not package; the jobs that link the workspace build this tag.
-  HARDENED_MALLOC_TAG: "14"
+  # Ubuntu does not package; the jobs that link the workspace build release 14
+  # (tag 14), by commit: the repository also has a branch named 14, which a
+  # `clone --branch 14` picks instead.
   HARDENED_MALLOC_COMMIT: 3bee8d3e0e4fd82b684521891373f40ab4982a5a
 
 jobs:
@@ -97,10 +98,10 @@ jobs:
       - name: Build hardened_malloc
         run: |
           dir="$RUNNER_TEMP/hardened_malloc"
-          git clone --quiet --depth 1 --branch "$HARDENED_MALLOC_TAG" \
-            https://github.com/GrapheneOS/hardened_malloc "$dir"
-          # A tag can be moved; the commit is what was reviewed.
-          [ "$(git -C "$dir" rev-parse HEAD)" = "$HARDENED_MALLOC_COMMIT" ]
+          git init --quiet "$dir"
+          git -C "$dir" fetch --quiet --depth 1 \
+            https://github.com/GrapheneOS/hardened_malloc "$HARDENED_MALLOC_COMMIT"
+          git -C "$dir" checkout --quiet FETCH_HEAD
           # No -march=native: rust-cache can restore the build on another CPU.
           make -C "$dir" -j"$(nproc)" CONFIG_NATIVE=false
           echo "HARDENED_MALLOC_LIB_DIR=$dir/out" >> "$GITHUB_ENV"
@@ -165,10 +166,10 @@ jobs:
       - name: Build hardened_malloc
         run: |
           dir="$RUNNER_TEMP/hardened_malloc"
-          git clone --quiet --depth 1 --branch "$HARDENED_MALLOC_TAG" \
-            https://github.com/GrapheneOS/hardened_malloc "$dir"
-          # A tag can be moved; the commit is what was reviewed.
-          [ "$(git -C "$dir" rev-parse HEAD)" = "$HARDENED_MALLOC_COMMIT" ]
+          git init --quiet "$dir"
+          git -C "$dir" fetch --quiet --depth 1 \
+            https://github.com/GrapheneOS/hardened_malloc "$HARDENED_MALLOC_COMMIT"
+          git -C "$dir" checkout --quiet FETCH_HEAD
           # No -march=native: rust-cache can restore the build on another CPU.
           make -C "$dir" -j"$(nproc)" CONFIG_NATIVE=false
           echo "HARDENED_MALLOC_LIB_DIR=$dir/out" >> "$GITHUB_ENV"
