@@ -747,6 +747,11 @@ impl<S: Shell> Host<S> {
                     Command::Close(window) => self.close(window),
                     Command::Runtime(client) => self.spawn_runtime(client),
                     Command::Quit => self.signal.stop(),
+                    Command::Keymap {
+                        layout,
+                        variant,
+                        options,
+                    } => self.set_keymap(&layout, &variant, &options),
                     command @ (Command::Describe(_) | Command::Capture(_)) => {
                         // The shell may just have changed; show it drawn.
                         self.settle = self.settle.max(2);
@@ -760,6 +765,23 @@ impl<S: Shell> Host<S> {
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// Compiles and installs a new keymap; clients get it with their next
+    /// key event. A name xkbcommon does not know keeps the current keymap.
+    fn set_keymap(&mut self, layout: &str, variant: &str, options: &str) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let config = XkbConfig {
+            layout,
+            variant,
+            options: (!options.is_empty()).then(|| options.to_owned()),
+            ..XkbConfig::default()
+        };
+        if let Err(e) = keyboard.set_xkb_config(self, config) {
+            eprintln!("mcsapi: keymap {layout:?} {variant:?}: {e:?}");
         }
     }
 
