@@ -208,7 +208,7 @@ fn json_string(text: &str) -> String {
 /// {"id":"derisk-dark","name":"Derisk Dark","scheme":"dark",
 ///  "palette":{"background":"#0f172a",...},
 ///  "tokens":{"background":"#0f172a",...,"radius":6},
-///  "fonts":{"sans":"Ubuntu",...},"icons":{"theme":"Adwaita",...},
+///  "fonts":{"sans":"Ubuntu",...},"icons":{"theme":"Papirus-Dark",...},
 ///  "portal":{"color_scheme":1,"accent_color":[0.64,0.9,0.21],"contrast":0}}
 /// ```
 pub fn json(id: &str, theme: &Theme) -> String {

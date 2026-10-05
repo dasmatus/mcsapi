@@ -146,9 +146,11 @@ pub struct Icons {
 }
 
 impl Default for Icons {
+    /// Papirus for icons, the theme derisk is designed around and the one
+    /// LosOS ships; its dark variant, since the default theme is dark.
     fn default() -> Self {
         Self {
-            theme: "Adwaita".to_owned(),
+            theme: "Papirus-Dark".to_owned(),
             cursor: "Adwaita".to_owned(),
             cursor_size: 24,
         }
@@ -235,6 +237,11 @@ impl Theme {
                 border: Color::rgb(148, 163, 184),
                 accent: Color::rgb(163, 230, 53),
                 destructive: Color::rgb(220, 38, 38),
+            },
+            // Papirus's variant drawn for light backgrounds.
+            icons: Icons {
+                theme: "Papirus".to_owned(),
+                ..Icons::default()
             },
             ..Self::dark()
         }
