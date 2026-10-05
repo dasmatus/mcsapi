@@ -20,6 +20,7 @@ member:
 | `x2mcsapi` | `crates/x2mcsapi` | Adapter that restyles foreign apps (web pages and Electron via an injected script, GTK 3/4, Qt Widgets) from the shell `Theme`, so they look coherent with derisk. |
 | `mcsapi-mcp` | `crates/mcsapi-mcp` | Stateless MCP server exposing desktop policy as `simulate` and `arrange` tools over Streamable HTTP. |
 | `mcsapi-compositor` | `crates/mcsapi-compositor` | Smithay Wayland compositor host: runs a desktop shell (the `Shell` trait) with Wayland clients and in-process `mcsapi-runtime` apps side by side. Nested (winit) backend, and DRM/KMS on a bare seat with the `kms` feature. |
+| `mcsapi-hardened-malloc` | `crates/mcsapi-hardened-malloc` | GrapheneOS's [hardened_malloc](https://github.com/GrapheneOS/hardened_malloc) as a `#[global_allocator]`. Links the system's `libhardened_malloc.so` (set `HARDENED_MALLOC_LIB_DIR` if the linker cannot find it), so a process the OS already preloads it into keeps one heap, and frees through `free_sized` so a wrong length aborts. |
 
 Shared package metadata and dependency versions live in the root
 `Cargo.toml` under `[workspace.package]` and `[workspace.dependencies]`; a new
