@@ -9,7 +9,7 @@ use mcsapi::WindowId;
 
 use crate::{
     Blur, Capture, ClientRequest, Command, KeyInput, KeyRoute, OutputTiming, Placement, Press,
-    Shell, Theme, a11y, accesskit, egui,
+    Shell, TextField, Theme, a11y, accesskit, egui,
 };
 
 /// Calls a shell method through Subsecond's jump table when the `hotpatch`
@@ -199,6 +199,10 @@ impl<S: Shell> Shell for Hot<S> {
 
     fn input_source(&mut self, synthetic: bool) {
         hot!(S::input_source, &mut self.0, synthetic)
+    }
+
+    fn text_input(&mut self, field: Option<TextField>) {
+        hot!(S::text_input, &mut self.0, field)
     }
 }
 
