@@ -1,0 +1,20 @@
+[package]
+name = "mcsapi-hardened-malloc"
+description = "GrapheneOS's hardened_malloc as a Rust global allocator, sharing the system's copy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+links = "hardened_malloc"
+
+# No dependencies: an allocator sits under everything else in the process, and
+# the few libc declarations it needs are written out in `sys`.
+[dependencies]
+
+[features]
+# Link libhardened_malloc-light.so, the variant built from upstream's
+# light.mk: no slab canaries, no write-after-free check, no guard slabs.
+# Use it only where the system preloads the light variant too, so the process
+# still has one allocator.
+light = []

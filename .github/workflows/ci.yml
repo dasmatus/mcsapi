@@ -32,6 +32,10 @@ env:
   GPUI_PACKAGES: >-
     libwayland-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev
     libvulkan-dev
+  # mcsapi-hardened-malloc links the system's libhardened_malloc.so, which
+  # Ubuntu does not package; the jobs that link the workspace build this tag.
+  HARDENED_MALLOC_TAG: "14"
+  HARDENED_MALLOC_COMMIT: 3bee8d3e0e4fd82b684521891373f40ab4982a5a
 
 jobs:
   fmt:
@@ -90,6 +94,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $BASE_PACKAGES \
             ${{ matrix.features == 'gpui' && '$GPUI_PACKAGES' || '' }}
+      - name: Build hardened_malloc
+        run: |
+          dir="$RUNNER_TEMP/hardened_malloc"
+          git clone --quiet --depth 1 --branch "$HARDENED_MALLOC_TAG" \
+            https://github.com/GrapheneOS/hardened_malloc "$dir"
+          # A tag can be moved; the commit is what was reviewed.
+          [ "$(git -C "$dir" rev-parse HEAD)" = "$HARDENED_MALLOC_COMMIT" ]
+          # No -march=native: rust-cache can restore the build on another CPU.
+          make -C "$dir" -j"$(nproc)" CONFIG_NATIVE=false
+          echo "HARDENED_MALLOC_LIB_DIR=$dir/out" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$dir/out" >> "$GITHUB_ENV"
       - name: Resolve toolchain
         id: toolchain
         run: |
@@ -147,6 +162,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $BASE_PACKAGES
+      - name: Build hardened_malloc
+        run: |
+          dir="$RUNNER_TEMP/hardened_malloc"
+          git clone --quiet --depth 1 --branch "$HARDENED_MALLOC_TAG" \
+            https://github.com/GrapheneOS/hardened_malloc "$dir"
+          # A tag can be moved; the commit is what was reviewed.
+          [ "$(git -C "$dir" rev-parse HEAD)" = "$HARDENED_MALLOC_COMMIT" ]
+          # No -march=native: rust-cache can restore the build on another CPU.
+          make -C "$dir" -j"$(nproc)" CONFIG_NATIVE=false
+          echo "HARDENED_MALLOC_LIB_DIR=$dir/out" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$dir/out" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: llvm-tools-preview

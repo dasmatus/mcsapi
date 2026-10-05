@@ -49,6 +49,8 @@
             openssl
             vulkan-loader
             libxcb
+            # mcsapi-hardened-malloc; the cc wrapper's -L and rpath find it.
+            graphene-hardened-malloc
           ];
 
           # dlopen'd at run time by winit, Smithay's EGL renderer and GPUI.
