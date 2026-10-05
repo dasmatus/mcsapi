@@ -12,8 +12,8 @@
 //! ```
 //!
 //! The crate links the system's `libhardened_malloc.so` and builds no copy of
-//! its own, so a process that `/etc/ld.so.preload` already puts it in (LosOS
-//! sets NixOS's `environment.memoryAllocator.provider`) keeps one heap. A
+//! its own, so a process that the preload file already puts it in (LosOS
+//! names this same library in `/etc/ld-nix.so.preload`) keeps one heap. A
 //! process it is not preloaded into still gets it, for C libraries too: the
 //! link puts it ahead of libc, so their `malloc` binds to it as well.
 //!

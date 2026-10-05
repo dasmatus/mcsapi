@@ -320,6 +320,18 @@ pub enum Command {
     /// Inject input as if it came from the seat (see [`Input`]). Paced
     /// like [`Command::Act`], and synthetic as well.
     Input(Input),
+    /// Switch the keyboard layout, for every client and the chrome alike,
+    /// for example when a setup screen offers the layouts to try. Fields are
+    /// XKB names as in `localectl list-x11-keymap-layouts`; empty ones fall
+    /// back to xkbcommon's defaults (`XKB_DEFAULT_*`, then `us`).
+    Keymap {
+        /// Layouts, comma-separated (`us`, `de,ru`).
+        layout: String,
+        /// Variants, one per layout (`nodeadkeys`), or empty.
+        variant: String,
+        /// Options (`grp:alt_shift_toggle`), or empty.
+        options: String,
+    },
 }
 
 /// A mouse button.
