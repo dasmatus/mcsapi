@@ -23,6 +23,13 @@
 //! )
 //! ```
 //!
+//! Buttons, toggles, badges, checkboxes, switches, alerts, separators,
+//! labels, progress bars and tooltips are drawn by Zed's `ui` components
+//! (vendored as `mcsapi-zed-ui`), whose Zed theme is built from the same
+//! tokens: [`Tokens::install`] installs both, and [`install_theme`] also
+//! passes on a full theme's fonts. Zed's components draw icons from
+//! `icons/*.svg`; create the application with [`Assets`] so they render.
+//!
 //! Interactive components hold no state of their own: they take the current
 //! value and report changes through an `on_*` callback, so the owning view
 //! decides what changes. Text fields are the exception; `TextInput` is an
@@ -33,6 +40,8 @@
 
 #[cfg(feature = "gpui")]
 mod actions;
+#[cfg(feature = "gpui")]
+mod assets;
 #[cfg(feature = "gpui")]
 mod display;
 #[cfg(feature = "gpui")]
@@ -51,6 +60,8 @@ pub use actions::{
     Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Kbd, Toggle, ToggleGroup,
 };
 #[cfg(feature = "gpui")]
+pub use assets::Assets;
+#[cfg(feature = "gpui")]
 pub use display::{
     Alert, AlertVariant, AspectRatio, Avatar, Card, Empty, Label, Progress, Separator, Skeleton,
     Spinner, blockquote, typography,
@@ -67,8 +78,16 @@ pub use navigation::{
 pub use overlays::{
     AlertDialog, AlertDialogAction, Dialog, Toast, Toaster, toast, toasts, tooltip,
 };
+/// Zed's theme types, with [`theme::theme_from_mcsapi`] building them from an
+/// mcsapi theme.
 #[cfg(feature = "gpui")]
-pub use tokens::Tokens;
+pub use theme;
+#[cfg(feature = "gpui")]
+pub use tokens::{Tokens, install_theme};
+/// Zed's `ui` component library these components are built on, for apps
+/// that want its other components (lists, menus, tabs, icons, ...).
+#[cfg(feature = "gpui")]
+pub use ui;
 
 /// A callback from a component to the view that owns its value.
 #[cfg(feature = "gpui")]

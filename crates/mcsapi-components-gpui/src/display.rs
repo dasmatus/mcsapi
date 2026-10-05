@@ -11,6 +11,8 @@ use gpui::{
     point, px,
 };
 
+use ui::{LabelCommon as _, Severity};
+
 use crate::Tokens;
 
 pub use mcsapi_components::AlertVariant;
@@ -127,34 +129,17 @@ impl Alert {
 
 impl RenderOnce for Alert {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let t = Tokens::get(cx);
-        let destructive = self.variant == AlertVariant::Destructive;
-        let (title, body) = if destructive {
-            (t.destructive, t.destructive.opacity(0.9))
+        crate::tokens::ensure_installed(cx);
+        let severity = if self.variant == AlertVariant::Destructive {
+            Severity::Error
         } else {
-            (t.foreground, t.muted_foreground)
+            Severity::Info
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .px(px(16.0))
-            .py(px(12.0))
-            .bg(t.card)
-            .border_1()
-            .border_color(t.border)
-            .rounded(t.card_radius())
-            .text_size(px(14.0))
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(title)
-                    .child(self.title),
-            )
-            .children(
-                self.description
-                    .map(|description| div().text_color(body).child(description)),
-            )
+        let mut callout = ui::Callout::new().severity(severity).title(self.title);
+        if let Some(description) = self.description {
+            callout = callout.description(description);
+        }
+        callout
     }
 }
 
@@ -179,11 +164,11 @@ impl Separator {
 
 impl RenderOnce for Separator {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let rule = div().flex_none().bg(Tokens::get(cx).border);
+        crate::tokens::ensure_installed(cx);
         if self.vertical {
-            rule.w(px(1.0)).h_full()
+            ui::Divider::vertical()
         } else {
-            rule.h(px(1.0)).w_full()
+            ui::Divider::horizontal()
         }
     }
 }
@@ -202,11 +187,8 @@ impl Label {
 
 impl RenderOnce for Label {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        div()
-            .text_size(px(14.0))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(Tokens::get(cx).foreground)
-            .child(self.0)
+        crate::tokens::ensure_installed(cx);
+        ui::Label::new(self.0).weight(FontWeight::MEDIUM)
     }
 }
 
@@ -408,23 +390,18 @@ impl Progress {
 
 impl RenderOnce for Progress {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        crate::tokens::ensure_installed(cx);
         let t = Tokens::get(cx);
-        let track = div()
-            .flex_none()
-            .h(px(8.0))
-            .rounded_full()
-            .bg(t.primary.opacity(0.2))
-            .overflow_hidden()
-            .child(
-                div()
-                    .h_full()
-                    .w(gpui::relative(self.value))
-                    .rounded_full()
-                    .bg(t.primary),
-            );
+        // Zed's bar has no fill color of its own beyond status colors; the
+        // track and fill keep shadcn's accent tint so progress reads as the
+        // theme's highlight.
+        let bar = ui::ProgressBar::new("progress", self.value, 1.0, cx)
+            .bg_color(t.primary.opacity(0.2))
+            .fg_color(t.primary);
+        let frame = div().flex_none().child(bar);
         match self.width {
-            Some(width) => track.w(px(width)),
-            None => track.w_full(),
+            Some(width) => frame.w(px(width)),
+            None => frame.w_full(),
         }
     }
 }

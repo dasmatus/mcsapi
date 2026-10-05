@@ -3945,6 +3945,9 @@ dependencies = [
  "libc",
  "mcsapi-components",
  "mcsapi-ui",
+ "mcsapi-zed-icons",
+ "mcsapi-zed-theme",
+ "mcsapi-zed-ui",
  "unicode-segmentation",
 ]
 

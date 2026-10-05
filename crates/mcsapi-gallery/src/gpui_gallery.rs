@@ -74,24 +74,26 @@ pub struct Options {
 
 /// Opens the gallery in a GPUI window and runs until it closes.
 pub fn run(options: Options) {
-    gpui_platform::application().run(move |cx: &mut App| {
-        mcsapi_components_gpui::bind_text_input_keys(cx);
-        let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("mcsapi widget gallery".into()),
+    gpui_platform::application()
+        .with_assets(mcsapi_components_gpui::Assets::new())
+        .run(move |cx: &mut App| {
+            mcsapi_components_gpui::bind_text_input_keys(cx);
+            let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("mcsapi widget gallery".into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| GalleryView::new(&options, window, cx)),
-        )
-        .expect("the gallery window opens");
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
-        cx.activate(true);
-    });
+                },
+                |window, cx| cx.new(|cx| GalleryView::new(&options, window, cx)),
+            )
+            .expect("the gallery window opens");
+            cx.on_window_closed(|cx, _| cx.quit()).detach();
+            cx.activate(true);
+        });
 }
 
 /// The gallery's root view.

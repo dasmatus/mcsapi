@@ -9,6 +9,8 @@ use gpui::{
     size,
 };
 
+use ui::{LabelSize, ToggleState};
+
 use crate::{Handler, TextInput, Tokens, actions::pressable};
 
 /// shadcn's Input: a single-line field around a [`TextInput`].
@@ -175,39 +177,21 @@ impl Checkbox {
     }
 }
 
-fn toggle_handler(value: bool, handler: Option<Handler<bool>>) -> Option<Handler<ClickEvent>> {
-    handler.map(|handler| {
-        Rc::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-            handler(&!value, window, cx)
-        }) as Handler<ClickEvent>
-    })
-}
-
 impl RenderOnce for Checkbox {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let t = Tokens::get(cx);
-        let mut check = div()
-            .flex_none()
-            .size(px(16.0))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(if self.checked { t.primary } else { t.border })
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(12.0))
-            .text_color(t.primary_foreground);
-        if self.checked {
-            check = check.bg(t.primary).child("✓");
+        crate::tokens::ensure_installed(cx);
+        let mut checkbox = ui::Checkbox::new(self.id, ToggleState::from(self.checked))
+            .label_size(LabelSize::Default)
+            .disabled(self.disabled);
+        if let Some(label) = self.label {
+            checkbox = checkbox.label(label);
         }
-        labelled(
-            self.id,
-            check,
-            self.label,
-            self.disabled,
-            toggle_handler(self.checked, self.on_change),
-            &t,
-        )
+        if let Some(handler) = self.on_change {
+            // Zed passes the state the click switches to.
+            checkbox =
+                checkbox.on_click(move |state, window, cx| handler(&state.selected(), window, cx));
+        }
+        checkbox
     }
 }
 
@@ -255,25 +239,18 @@ impl Switch {
 
 impl RenderOnce for Switch {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let t = Tokens::get(cx);
-        let track = div()
-            .flex_none()
-            .w(px(36.0))
-            .h(px(20.0))
-            .p(px(2.0))
-            .rounded_full()
-            .bg(if self.on { t.primary } else { t.border })
-            .flex()
-            .when(self.on, |track| track.justify_end())
-            .child(div().size(px(16.0)).rounded_full().bg(t.background));
-        labelled(
-            self.id,
-            track,
-            self.label,
-            self.disabled,
-            toggle_handler(self.on, self.on_change),
-            &t,
-        )
+        crate::tokens::ensure_installed(cx);
+        let mut switch = ui::Switch::new(self.id, ToggleState::from(self.on))
+            .label_size(LabelSize::Default)
+            .disabled(self.disabled);
+        if let Some(label) = self.label {
+            switch = switch.label(label);
+        }
+        if let Some(handler) = self.on_change {
+            switch =
+                switch.on_click(move |state, window, cx| handler(&state.selected(), window, cx));
+        }
+        switch
     }
 }
 

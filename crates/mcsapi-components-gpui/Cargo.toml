@@ -12,9 +12,22 @@ mcsapi-components.workspace = true
 mcsapi-ui.workspace = true
 gpui = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
+mcsapi-zed-icons = { workspace = true, optional = true }
+mcsapi-zed-theme = { workspace = true, optional = true }
+mcsapi-zed-ui = { workspace = true, optional = true }
 unicode-segmentation = { version = "1", optional = true }
 
 [features]
 # Everything in this crate needs GPUI, which needs Wayland and Vulkan system
 # libraries; off by default like mcsapi's own `gpui` feature.
-gpui = ["dep:gpui", "dep:libc", "dep:unicode-segmentation", "mcsapi-ui/gpui"]
+gpui = [
+    "dep:gpui",
+    "dep:libc",
+    "dep:mcsapi-zed-icons",
+    "dep:mcsapi-zed-theme",
+    "dep:mcsapi-zed-ui",
+    "dep:unicode-segmentation",
+    "mcsapi-ui/gpui",
+    "mcsapi-zed-theme/gpui",
+    "mcsapi-zed-ui/gpui",
+]
