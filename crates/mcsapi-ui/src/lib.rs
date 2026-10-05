@@ -67,5 +67,48 @@ pub fn run_frame(
             .fill(theme.background)
             .inner_margin(8)
             .show(ui, |ui| app.ui(ui, theme));
+        paint_focus_ring(ui.ctx(), theme.accent);
     })
+}
+
+/// Outlines the focused widget while the keyboard (or a screen reader) is
+/// moving focus, so Tab navigation shows where it is. egui only shades a
+/// focused widget like a pressed one, which is easy to miss. Pointer input
+/// hides the ring again. Call at the end of a frame.
+pub fn paint_focus_ring(ctx: &egui::Context, color: egui::Color32) {
+    let keyboard_id = egui::Id::new("mcsapi-focus-ring-keyboard");
+    let latest = ctx.input(|i| {
+        i.events.iter().rev().find_map(|e| match e {
+            egui::Event::Key { pressed: true, .. } | egui::Event::AccessKitActionRequest(_) => {
+                Some(true)
+            }
+            egui::Event::PointerButton { .. } => Some(false),
+            _ => None,
+        })
+    });
+    let keyboard = match latest {
+        Some(keyboard) => {
+            ctx.data_mut(|d| d.insert_temp(keyboard_id, keyboard));
+            keyboard
+        }
+        None => ctx.data(|d| d.get_temp(keyboard_id)).unwrap_or(false),
+    };
+    let Some(rect) = keyboard
+        .then(|| ctx.memory(|m| m.focused()))
+        .flatten()
+        .and_then(|id| ctx.read_response(id))
+        .map(|r| r.rect)
+    else {
+        return;
+    };
+    ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("mcsapi-focus-ring"),
+    ))
+    .rect_stroke(
+        rect.expand(2.0),
+        4,
+        egui::Stroke::new(2.5, color),
+        egui::StrokeKind::Outside,
+    );
 }
