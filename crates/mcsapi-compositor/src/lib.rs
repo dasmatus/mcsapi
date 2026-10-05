@@ -85,6 +85,7 @@ mod hot;
 #[cfg(feature = "kms")]
 mod kms;
 mod runtime;
+mod text_input;
 
 use std::{fmt, time::Duration};
 
@@ -128,6 +129,14 @@ impl Placement {
             maximized: false,
         }
     }
+}
+
+/// A client's text field that has keyboard focus and asked for text input
+/// (`zwp_text_input_v3`), as reported to [`Shell::text_input`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextField {
+    /// A password or PIN: nothing typed into it should be remembered.
+    pub password: bool,
 }
 
 /// A screen area whose backdrop is blurred before the chrome is painted.
@@ -540,6 +549,13 @@ pub trait Shell: 'static {
     /// A shell can refuse to let synthetic input confirm what only a person
     /// should, such as powering off.
     fn input_source(&mut self, _synthetic: bool) {}
+
+    /// A Wayland client's focused text field asked for text input
+    /// (`Some`), or the one that had stopped (`None`). An on-screen keyboard
+    /// shows itself here; while a field is active, [`Input::Text`] reaches it
+    /// as committed text rather than as key presses, so characters the
+    /// keymap lacks still arrive.
+    fn text_input(&mut self, _field: Option<TextField>) {}
 }
 
 /// In-process apps the compositor can launch, usually backed by an

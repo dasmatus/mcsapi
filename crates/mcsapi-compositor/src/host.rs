@@ -97,7 +97,7 @@ use smithay::{
 use crate::{
     Apps, Blur, Capture, ClientRequest, Command, Compositor, GestureEvent, Input, InstanceId, Job,
     KeyInput, KeyRoute, Modifiers, MouseButton, OutputTiming, Placement, Press, Reserved, Role,
-    RuntimeClient, Shell, a11y, accesskit, blur, egui,
+    RuntimeClient, Shell, a11y, accesskit, blur, egui, text_input::TextInputs,
 };
 use mcsapi_ui::gesture::EguiBridge;
 
@@ -301,6 +301,7 @@ pub(crate) struct Host<S: Shell> {
     _pointer_gestures_state: PointerGesturesState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
+    text_inputs: TextInputs,
     popups: PopupManager,
     seat: Seat<Self>,
     space: Space<Window>,
@@ -574,6 +575,10 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
         _pointer_gestures_state: PointerGesturesState::new::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
+        text_inputs: {
+            TextInputs::global::<S>(&dh);
+            TextInputs::default()
+        },
         seat_state,
         popups: PopupManager::default(),
         seat,
@@ -1469,6 +1474,18 @@ impl<S: Shell> Host<S> {
         }
     }
 
+    pub(crate) fn text_inputs_mut(&mut self) -> &mut TextInputs {
+        &mut self.text_inputs
+    }
+
+    /// Tells the shell when the focused text field starts or stops wanting
+    /// text input.
+    pub(crate) fn text_input_changed(&mut self) {
+        if let Some(field) = self.text_inputs.changed() {
+            self.shell.text_input(field);
+        }
+    }
+
     /// Feeds injected input through the same paths as the seat's.
     fn inject(&mut self, input: Input) {
         self.set_synthetic(true);
@@ -1501,6 +1518,11 @@ impl<S: Shell> Host<S> {
                     eprintln!("mcsapi-compositor: no key for {sym:?} in the keymap");
                 }
             }
+            // A focused field that asked for text input gets the text as
+            // one commit; line breaks and tabs stay keys, since they
+            // usually mean "submit" or "next field" rather than text.
+            Input::Text(text)
+                if !text.contains(['\n', '\t']) && self.text_inputs.commit_string(&text) => {}
             Input::Text(text) => {
                 for c in text.chars() {
                     let sym = match c {
@@ -2980,6 +3002,8 @@ impl<S: Shell + 'static> SeatHandler for Host<S> {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| self.display.get_client(s.id()).ok());
         set_data_device_focus(&self.display, seat, client);
+        self.text_inputs.set_focus(focused.cloned());
+        self.text_input_changed();
     }
 }
 
