@@ -26,7 +26,7 @@ use smithay::{
             AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent as _,
             GestureEndEvent as _, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
             InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
-            PointerButtonEvent,
+            PointerButtonEvent, TouchEvent, TouchSlot,
         },
         renderer::{
             Color32F, Frame, Renderer,
@@ -350,6 +350,8 @@ pub(crate) struct Host<S: Shell> {
     gesture_bridge: EguiBridge,
     /// The in-process app being scrolled with fingers, and when it last moved.
     scroll: Option<(WindowId, u32)>,
+    /// The touch point driving the pointer, from its down to its up.
+    touch: Option<TouchSlot>,
     /// Keys whose press the shell consumed; their release is consumed too.
     consumed_keys: HashSet<u32>,
 
@@ -507,6 +509,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         gesture: None,
         gesture_bridge: EguiBridge::default(),
         scroll: None,
+        touch: None,
         consumed_keys: HashSet::new(),
         children: Vec::new(),
         runtime: Vec::new(),
@@ -1058,6 +1061,33 @@ impl<S: Shell> Host<S> {
             }
             InputEvent::PointerButton { event } => {
                 self.pointer_button(event.button_code(), event.state(), Event::time_msec(&event));
+            }
+            // A touchscreen (a phone, or a laptop's screen) drives the pointer
+            // with its first finger: down presses the primary button where it
+            // lands, motion drags, and up or cancel releases. The chrome, the
+            // shell's own hit testing and in-process apps then work by touch
+            // as they do by mouse. Further fingers are ignored until the first
+            // lifts. Clients get pointer events, not wl_touch.
+            InputEvent::TouchDown { event } if self.touch.is_none() => {
+                let size = self.backend.window_size();
+                self.touch = Some(event.slot());
+                self.pointer = event.position_transformed((size.w, size.h).into());
+                let time = Event::time_msec(&event);
+                self.pointer_motion(time);
+                self.pointer_button(BTN_LEFT, ButtonState::Pressed, time);
+            }
+            InputEvent::TouchMotion { event } if self.touch == Some(event.slot()) => {
+                let size = self.backend.window_size();
+                self.pointer = event.position_transformed((size.w, size.h).into());
+                self.pointer_motion(Event::time_msec(&event));
+            }
+            InputEvent::TouchUp { event } if self.touch == Some(event.slot()) => {
+                self.touch = None;
+                self.pointer_button(BTN_LEFT, ButtonState::Released, Event::time_msec(&event));
+            }
+            InputEvent::TouchCancel { event } if self.touch == Some(event.slot()) => {
+                self.touch = None;
+                self.pointer_button(BTN_LEFT, ButtonState::Released, Event::time_msec(&event));
             }
             InputEvent::PointerAxis { event } => {
                 let amount = |axis| {
