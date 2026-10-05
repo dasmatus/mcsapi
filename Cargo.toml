@@ -25,3 +25,10 @@ gpui = { version = "0.2.2", default-features = false, features = ["wayland"] }
 libc = "=0.2.189"
 smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend"] }
 
+
+# One codegen unit and fat LTO across every crate: release builds are the ones
+# that ship (derisk links all of this into one binary), so they trade build
+# time for inlining across crate boundaries and a smaller binary.
+[profile.release]
+lto = true
+codegen-units = 1
