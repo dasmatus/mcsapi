@@ -2,11 +2,14 @@
 //! rendering.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
     fs::File,
     io,
-    os::fd::{AsRawFd, OwnedFd},
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::{net::UnixStream, process::CommandExt},
+    },
     process::{Child, Command as Process},
     sync::{
         Arc,
@@ -24,14 +27,14 @@ use smithay::{
             AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent as _,
             GestureEndEvent as _, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
             InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
-            PointerButtonEvent,
+            PointerButtonEvent, TouchEvent, TouchSlot,
         },
         renderer::{
             Bind, Color32F, Frame, Offscreen, Renderer, Texture,
             element::{
                 AsRenderElements, Element, RenderElement, surface::WaylandSurfaceRenderElement,
             },
-            gles::{GlesRenderer, GlesTexture},
+            gles::{GlesFrame, GlesRenderer, GlesTexture},
             utils::on_commit_buffer_handler,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
@@ -41,7 +44,7 @@ use smithay::{
     desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         Seat, SeatHandler, SeatState,
-        keyboard::{FilterResult, Keysym, KeysymHandle, ModifiersState, XkbConfig},
+        keyboard::{FilterResult, Keycode, Keysym, KeysymHandle, ModifiersState, XkbConfig},
         pointer::{self, AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent},
     },
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
@@ -92,8 +95,9 @@ use smithay::{
 };
 
 use crate::{
-    Apps, Blur, ClientRequest, Command, Compositor, GestureEvent, InstanceId, Job, KeyInput,
-    KeyRoute, Modifiers, OutputTiming, Placement, Press, Shell, blur, egui,
+    Apps, Blur, Capture, ClientRequest, Command, Compositor, GestureEvent, Input, InstanceId, Job,
+    KeyInput, KeyRoute, Modifiers, MouseButton, OutputTiming, Placement, Press, Reserved, Role,
+    RuntimeClient, Shell, a11y, accesskit, blur, egui,
 };
 use mcsapi_ui::gesture::EguiBridge;
 
@@ -217,6 +221,13 @@ impl Egui {
             painter: None,
         }
     }
+
+    /// A context that also builds an AccessKit tree each frame.
+    fn accessible() -> Self {
+        let egui = Self::new();
+        egui.ctx.enable_accesskit();
+        egui
+    }
 }
 
 /// Tessellated egui output with the texture updates it needs.
@@ -236,12 +247,31 @@ enum Content {
         egui: Egui,
         events: Vec<egui::Event>,
         title: String,
+        app_id: String,
+        /// The app's accessibility tree from its last frame.
+        access: Option<accesskit::TreeUpdate>,
     },
+}
+
+/// A running [`RuntimeClient`].
+struct RuntimeChild {
+    client: RuntimeClient,
+    child: Child,
+    started: Instant,
+}
+
+/// A toplevel from a runtime client with a panel or overlay role, placed by
+/// the compositor instead of the shell.
+struct Layer {
+    window: Window,
+    role: Role,
 }
 
 /// Who receives pointer input until all buttons are released.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Route {
+    /// A runtime panel or overlay (a Wayland client).
+    Layer,
     Chrome,
     Shell,
     Content(Option<WindowId>),
@@ -298,6 +328,22 @@ pub(crate) struct Host<S: Shell> {
     chrome: Egui,
     decorations: Egui,
     chrome_events: Vec<egui::Event>,
+    /// The chrome's accessibility tree from its last frame.
+    chrome_access: Option<accesskit::TreeUpdate>,
+    merger: a11y::Merger,
+    #[cfg(feature = "atspi")]
+    atspi: Option<crate::atspi::Bridge>,
+    /// [`Command::Capture`] requests waiting for the next frame.
+    captures: Vec<u64>,
+    /// Agent commands, carried out one per frame: egui sees only one click
+    /// per frame, and a tree or capture taken right after input should show
+    /// its result.
+    agent_queue: VecDeque<Command>,
+    /// Frames to wait after injected input before reading the tree or the
+    /// screen: one for the app to handle it, one to draw the result.
+    settle: u8,
+    /// Whether the latest input was injected; see [`Shell::input_source`].
+    synthetic: bool,
     pointer: Point<f64, Logical>,
     route: Option<Route>,
     buttons: u32,
@@ -310,16 +356,32 @@ pub(crate) struct Host<S: Shell> {
     gesture_bridge: EguiBridge,
     /// The in-process app being scrolled with fingers, and when it last moved.
     scroll: Option<(WindowId, u32)>,
+    /// The touch point driving the pointer, from its down to its up.
+    touch: Option<TouchSlot>,
     /// Keys whose press the shell consumed; their release is consumed too.
     consumed_keys: HashSet<u32>,
 
     children: Vec<Child>,
+
+    /// Runtime clients this compositor started.
+    runtime: Vec<RuntimeChild>,
+    /// Their mapped panels and overlays, bottom to top.
+    layers: Vec<Layer>,
+    /// The panel a click gave the keyboard to ([`Role::Panel`] `keyboard`).
+    layer_focus: Option<WlSurface>,
+    /// The surface the keyboard was last given to.
+    keyboard_surface: Option<WlSurface>,
+    /// What the shell was last told panels cover.
+    reserved: Reserved,
 }
 
 /// Per-client Wayland state.
 #[derive(Default)]
 struct ClientState {
     compositor_state: CompositorClientState,
+    /// The role of a runtime client, fixed when the compositor created its
+    /// connection; `None` for clients of the public socket.
+    role: Option<Role>,
 }
 
 impl ClientData for ClientState {
@@ -409,8 +471,10 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         title,
         vrr,
         launch,
+        runtime,
         jobs,
     } = config;
+    let merger = a11y::Merger::new(title.clone());
     let mut event_loop: EventLoop<Host<S>> = EventLoop::try_new()?;
     let display: Display<Host<S>> = Display::new()?;
     let dh = display.handle();
@@ -529,9 +593,17 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         windows: HashMap::new(),
         unmanaged: Vec::new(),
         keyboard_focus: None,
-        chrome: Egui::new(),
+        chrome: Egui::accessible(),
         decorations: Egui::new(),
         chrome_events: Vec::new(),
+        chrome_access: None,
+        merger,
+        #[cfg(feature = "atspi")]
+        atspi: None,
+        captures: Vec::new(),
+        agent_queue: VecDeque::new(),
+        settle: 0,
+        synthetic: false,
         pointer: (0.0, 0.0).into(),
         route: None,
         buttons: 0,
@@ -541,9 +613,28 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         gesture: None,
         gesture_bridge: EguiBridge::default(),
         scroll: None,
+        touch: None,
         consumed_keys: HashSet::new(),
         children: Vec::new(),
+        runtime: Vec::new(),
+        layers: Vec::new(),
+        layer_focus: None,
+        keyboard_surface: None,
+        reserved: Reserved::default(),
     };
+    #[cfg(feature = "atspi")]
+    {
+        let (sender, requests) = channel::channel();
+        host.atspi = Some(crate::atspi::Bridge::new(sender));
+        event_loop
+            .handle()
+            .insert_source(requests, |event, _, host| {
+                if let channel::Event::Msg(request) = event {
+                    host.atspi_request(request);
+                    host.run_commands();
+                }
+            })?;
+    }
     host.shell.set_output((size.w, size.h));
     host.shell
         .session_started(&host.socket_name.to_string_lossy());
@@ -590,6 +681,9 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
     event_loop.handle().insert_source(
         Timer::from_duration(Duration::from_millis(300)),
         move |_, _, host| {
+            for client in &runtime {
+                host.spawn_runtime(client.clone());
+            }
             for app in &launch {
                 host.launch(app);
             }
@@ -618,7 +712,11 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         host.popups.cleanup();
         let _ = host.display.flush_clients();
     });
-    for child in &mut host.children {
+    for child in host
+        .children
+        .iter_mut()
+        .chain(host.runtime.iter_mut().map(|r| &mut r.child))
+    {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -642,7 +740,19 @@ impl<S: Shell> Host<S> {
                 match command {
                     Command::Launch(app) => self.launch(&app),
                     Command::Close(window) => self.close(window),
+                    Command::Runtime(client) => self.spawn_runtime(client),
                     Command::Quit => self.signal.stop(),
+                    command @ (Command::Describe(_) | Command::Capture(_)) => {
+                        // The shell may just have changed; show it drawn.
+                        self.settle = self.settle.max(2);
+                        self.agent_queue.push_back(command);
+                    }
+                    command @ (Command::Act { .. } | Command::Input(_)) => {
+                        self.agent_queue.push_back(command);
+                    }
+                    // Commands added later are ignored until handled.
+                    #[allow(unreachable_patterns)]
+                    _ => {}
                 }
             }
         }
@@ -663,9 +773,11 @@ impl<S: Shell> Host<S> {
                         id,
                         Content::Internal {
                             instance,
-                            egui: Egui::new(),
+                            egui: Egui::accessible(),
                             events: Vec::new(),
                             title,
+                            app_id: app.as_str().to_owned(),
+                            access: None,
                         },
                     );
                 }
@@ -699,6 +811,144 @@ impl<S: Shell> Host<S> {
     fn reap_children(&mut self) {
         self.children
             .retain_mut(|child| child.try_wait().map_or(true, |status| status.is_none()));
+        let now = Instant::now();
+        let mut restart = Vec::new();
+        self.runtime.retain_mut(|r| {
+            let exited = r.child.try_wait().is_ok_and(|status| status.is_some());
+            if exited {
+                if r.client.restarts_after(r.started, now) {
+                    restart.push(r.client.clone());
+                } else if r.client.restart {
+                    eprintln!(
+                        "mcsapi-compositor: {:?} exited within {:?} of starting; not restarting it",
+                        r.client.argv,
+                        RuntimeClient::MIN_UPTIME
+                    );
+                }
+            }
+            !exited
+        });
+        for client in restart {
+            self.spawn_runtime(client);
+        }
+    }
+
+    /// Starts `client` on a private connection that carries its role.
+    fn spawn_runtime(&mut self, client: RuntimeClient) {
+        let Some((program, args)) = client.argv.split_first() else {
+            return;
+        };
+        let (ours, theirs) = match UnixStream::pair() {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("mcsapi-compositor: cannot start {program}: {e}");
+                return;
+            }
+        };
+        let state = ClientState {
+            role: Some(client.role),
+            ..ClientState::default()
+        };
+        if let Err(e) = self.display.insert_client(ours, Arc::new(state)) {
+            eprintln!("mcsapi-compositor: cannot start {program}: {e}");
+            return;
+        }
+        let fd = theirs.as_raw_fd();
+        let mut process = Process::new(program);
+        process
+            .args(args)
+            // libwayland connects to WAYLAND_SOCKET before WAYLAND_DISPLAY,
+            // and closes the fd once connected.
+            .env("WAYLAND_SOCKET", fd.to_string())
+            .env("WAYLAND_DISPLAY", &self.socket_name)
+            .env("MCSAPI_ROLE", client.role.as_str())
+            .env("XDG_SESSION_TYPE", "wayland")
+            .env_remove("DISPLAY");
+        // SAFETY: fcntl is async-signal-safe and touches only the child's
+        // copy of `fd`, which stays open in the parent until spawn returns.
+        unsafe {
+            process.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        match process.spawn() {
+            Ok(child) => self.runtime.push(RuntimeChild {
+                client,
+                child,
+                started: Instant::now(),
+            }),
+            Err(e) => eprintln!("mcsapi-compositor: cannot start {program}: {e}"),
+        }
+        // The child has its copy; ours closes here.
+        drop(theirs);
+    }
+
+    /// The role a surface's client was started with, if it is a runtime
+    /// client.
+    fn role_of(&self, surface: &WlSurface) -> Option<Role> {
+        let client = self.display.get_client(surface.id()).ok()?;
+        client.get_data::<ClientState>()?.role
+    }
+
+    /// Places panels and overlays on the output and tells the shell what
+    /// panels cover.
+    fn arrange_layers(&mut self) {
+        let size = self.backend.size();
+        for layer in &self.layers {
+            let Some(g) = layer.role.geometry((size.w, size.h)) else {
+                continue;
+            };
+            if let Some(toplevel) = layer.window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some(g.size);
+                    state.states.set(ToplevelState::Activated);
+                });
+                if toplevel.is_initial_configure_sent() {
+                    toplevel.send_pending_configure();
+                }
+            }
+            let offset = layer.window.geometry().loc;
+            self.space
+                .map_element(layer.window.clone(), g.loc - offset, false);
+            self.space.raise_element(&layer.window, false);
+        }
+        let reserved = Reserved::of(self.layers.iter().map(|l| l.role));
+        if reserved != self.reserved {
+            self.reserved = reserved;
+            self.shell.set_reserved(reserved);
+        }
+    }
+
+    /// The topmost panel or overlay under the pointer. An overlay covers the
+    /// whole output, so it takes everything.
+    fn layer_under(&self) -> Option<&Layer> {
+        let size = self.backend.size();
+        let (x, y) = self.point();
+        self.layers.iter().rev().find(|layer| {
+            layer.role.geometry((size.w, size.h)).is_some_and(|g| {
+                x >= g.loc.x && y >= g.loc.y && x < g.loc.x + g.size.w && y < g.loc.y + g.size.h
+            })
+        })
+    }
+
+    /// The overlay that has the keyboard, if one is mapped.
+    fn overlay(&self) -> Option<&Layer> {
+        self.layers.iter().rev().find(|l| l.role == Role::Overlay)
+    }
+
+    /// Whether pointer input at the pointer goes to a panel or overlay
+    /// instead of the chrome or windows: always over an overlay, and over a
+    /// panel unless one of the chrome's popups is open (it may overlap).
+    fn pointer_on_layer(&self) -> bool {
+        match self.layer_under() {
+            Some(layer) if layer.role == Role::Overlay => true,
+            Some(_) => !egui::Popup::is_any_open(&self.chrome.ctx),
+            None => false,
+        }
     }
 
     fn close(&mut self, window: WindowId) {
@@ -793,13 +1043,25 @@ impl<S: Shell> Host<S> {
             self.space.raise_element(window, false);
         }
 
+        self.arrange_layers();
+
+        // The keyboard goes to an overlay while one is mapped, then to a
+        // panel that was clicked, then to the shell's focused window.
         let focused = self.shell.focused();
-        if focused != self.keyboard_focus {
-            self.keyboard_focus = focused;
-            let surface = focused.and_then(|id| match self.windows.get(&id) {
+        self.keyboard_focus = focused;
+        let layer = self
+            .overlay()
+            .and_then(|l| l.window.toplevel())
+            .map(|t| t.wl_surface().clone())
+            .or_else(|| self.layer_focus.clone());
+        let surface = layer.or_else(|| {
+            focused.and_then(|id| match self.windows.get(&id) {
                 Some(Content::Wayland(w)) => w.toplevel().map(|t| t.wl_surface().clone()),
                 _ => None,
-            });
+            })
+        });
+        if surface != self.keyboard_surface {
+            self.keyboard_surface = surface.clone();
             if let Some(keyboard) = self.seat.get_keyboard() {
                 keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
             }
@@ -847,7 +1109,17 @@ impl<S: Shell> Host<S> {
             }
             WinitEvent::Input(event) => self.input(event),
             WinitEvent::CloseRequested => self.signal.stop(),
-            WinitEvent::Focus(_) | WinitEvent::Redraw => {}
+            #[cfg(feature = "atspi")]
+            WinitEvent::Focus(focused) => {
+                if let Some(atspi) = &mut self.atspi
+                    && !atspi.focused(focused)
+                {
+                    self.atspi = None;
+                }
+            }
+            #[cfg(not(feature = "atspi"))]
+            WinitEvent::Focus(_) => {}
+            WinitEvent::Redraw => {}
         }
         self.run_commands();
     }
@@ -894,6 +1166,7 @@ impl<S: Shell> Host<S> {
     /// Routes one input event. Generic so a libinput backend, which also
     /// reports touchpad gestures, can share it; winit reports none.
     fn input<B: InputBackend>(&mut self, event: InputEvent<B>) {
+        self.set_synthetic(false);
         match event {
             InputEvent::Keyboard { event } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -929,6 +1202,33 @@ impl<S: Shell> Host<S> {
             InputEvent::PointerButton { event } => {
                 self.pointer_button(event.button_code(), event.state(), Event::time_msec(&event));
             }
+            // A touchscreen (a phone, or a laptop's screen) drives the pointer
+            // with its first finger: down presses the primary button where it
+            // lands, motion drags, and up or cancel releases. The chrome, the
+            // shell's own hit testing and in-process apps then work by touch
+            // as they do by mouse. Further fingers are ignored until the first
+            // lifts. Clients get pointer events, not wl_touch.
+            InputEvent::TouchDown { event } if self.touch.is_none() => {
+                let size = self.backend.size();
+                self.touch = Some(event.slot());
+                self.pointer = event.position_transformed((size.w, size.h).into());
+                let time = Event::time_msec(&event);
+                self.pointer_motion(time);
+                self.pointer_button(BTN_LEFT, ButtonState::Pressed, time);
+            }
+            InputEvent::TouchMotion { event } if self.touch == Some(event.slot()) => {
+                let size = self.backend.size();
+                self.pointer = event.position_transformed((size.w, size.h).into());
+                self.pointer_motion(Event::time_msec(&event));
+            }
+            InputEvent::TouchUp { event } if self.touch == Some(event.slot()) => {
+                self.touch = None;
+                self.pointer_button(BTN_LEFT, ButtonState::Released, Event::time_msec(&event));
+            }
+            InputEvent::TouchCancel { event } if self.touch == Some(event.slot()) => {
+                self.touch = None;
+                self.pointer_button(BTN_LEFT, ButtonState::Released, Event::time_msec(&event));
+            }
             InputEvent::PointerAxis { event } => {
                 let amount = |axis| {
                     event
@@ -937,71 +1237,7 @@ impl<S: Shell> Host<S> {
                         .unwrap_or(0.0)
                 };
                 let (h, v) = (amount(Axis::Horizontal), amount(Axis::Vertical));
-                let source = event.source();
-                let fingers = matches!(source, AxisSource::Finger | AxisSource::Continuous);
-                // libinput ends finger scrolling with an empty event.
-                let stop = fingers && h == 0.0 && v == 0.0;
-                let modifiers = self.egui_mods;
-                let wheel = |phase| egui::Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(-h as f32, -v as f32),
-                    phase,
-                    modifiers,
-                };
-                if self.chrome_wants_pointer() {
-                    self.chrome_events.push(wheel(egui::TouchPhase::Move));
-                    return;
-                }
-                let under = self.content_under();
-                if fingers && let Some(window) = under.filter(|w| self.is_internal(*w)) {
-                    // Bracket finger scrolling in Start and End so apps can
-                    // follow it 1:1 and coast (mcsapi_ui::gesture).
-                    let now = self.now_ms();
-                    let ongoing = self.scroll.is_some_and(|(w, _)| w == window);
-                    if !ongoing {
-                        self.end_scroll();
-                    }
-                    let mut events = Vec::with_capacity(2);
-                    if !ongoing && !stop {
-                        events.push(egui::Event::MouseWheel {
-                            unit: egui::MouseWheelUnit::Point,
-                            delta: egui::Vec2::ZERO,
-                            phase: egui::TouchPhase::Start,
-                            modifiers,
-                        });
-                    }
-                    events.push(wheel(if stop {
-                        egui::TouchPhase::End
-                    } else {
-                        egui::TouchPhase::Move
-                    }));
-                    self.scroll = (!stop).then_some((window, now));
-                    if stop && !ongoing {
-                        return;
-                    }
-                    self.internal_events(Some(window))
-                        .expect("checked above")
-                        .extend(events);
-                    return;
-                }
-                if let Some(events) = self.internal_events(under) {
-                    events.push(wheel(egui::TouchPhase::Move));
-                    return;
-                }
-                let mut frame = AxisFrame::new(Event::time_msec(&event)).source(source);
-                if h != 0.0 {
-                    frame = frame.value(Axis::Horizontal, h);
-                }
-                if v != 0.0 {
-                    frame = frame.value(Axis::Vertical, v);
-                }
-                if stop {
-                    frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
-                }
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.axis(self, frame);
-                    pointer.frame(self);
-                }
+                self.axis(h, v, event.source(), Event::time_msec(&event));
             }
             InputEvent::GestureSwipeBegin { event } => self.gesture(
                 GestureEvent::SwipeBegin {
@@ -1054,6 +1290,399 @@ impl<S: Shell> Host<S> {
                 Event::time_msec(&event),
             ),
             _ => {}
+        }
+    }
+
+    /// Carries out the next queued agent command, if it is its turn.
+    fn agent_step(&mut self) {
+        self.settle = self.settle.saturating_sub(1);
+        let reads = matches!(
+            self.agent_queue.front(),
+            Some(Command::Describe(_) | Command::Capture(_))
+        );
+        if reads && self.settle > 0 {
+            return;
+        }
+        match self.agent_queue.pop_front() {
+            Some(Command::Describe(request)) => {
+                let tree = self.build_tree();
+                let snapshot = a11y::snapshot(&self.merger, &tree);
+                self.shell.described(request, snapshot);
+            }
+            Some(Command::Capture(request)) => self.captures.push(request),
+            Some(Command::Act {
+                element,
+                action,
+                value,
+            }) => {
+                self.set_synthetic(true);
+                self.act(accesskit::NodeId(element), action, value);
+                self.settle = 2;
+            }
+            Some(Command::Input(input)) => {
+                self.inject(input);
+                self.settle = 2;
+            }
+            _ => {}
+        }
+        self.run_commands();
+    }
+
+    /// Tells the shell when input switches between injected and real.
+    fn set_synthetic(&mut self, synthetic: bool) {
+        if self.synthetic != synthetic {
+            self.synthetic = synthetic;
+            self.shell.input_source(synthetic);
+        }
+    }
+
+    /// A window's title and app ID, as its client or app reports them.
+    fn window_label(&self, window: WindowId) -> (String, String) {
+        match self.windows.get(&window) {
+            Some(Content::Internal { title, app_id, .. }) => (title.clone(), app_id.clone()),
+            Some(Content::Wayland(w)) => w
+                .toplevel()
+                .map(|t| {
+                    with_states(t.wl_surface(), |states| {
+                        states
+                            .data_map
+                            .get::<XdgToplevelSurfaceData>()
+                            .and_then(|d| d.lock().ok())
+                            .map(|d| {
+                                (
+                                    d.title.clone().unwrap_or_default(),
+                                    d.app_id.clone().unwrap_or_default(),
+                                )
+                            })
+                            .unwrap_or_default()
+                    })
+                })
+                .unwrap_or_default(),
+            None => Default::default(),
+        }
+    }
+
+    /// The merged accessibility tree of the chrome and the visible windows.
+    fn build_tree(&mut self) -> accesskit::TreeUpdate {
+        let placements = self.shell.placements();
+        let labels: Vec<(String, String)> = placements
+            .iter()
+            .map(|p| self.window_label(p.window))
+            .collect();
+        let subtrees = self.shell.access_subtrees();
+        let windows: Vec<a11y::WindowInfo<'_>> = placements
+            .iter()
+            .zip(&labels)
+            .map(|(p, (title, app_id))| a11y::WindowInfo {
+                window: p.window,
+                title,
+                app_id,
+                frame: p.frame,
+                focused: p.focused,
+                content: match self.windows.get(&p.window) {
+                    Some(Content::Internal { access, .. }) => access.as_ref(),
+                    _ => None,
+                },
+            })
+            .collect();
+        self.merger
+            .build(self.chrome_access.as_ref(), &windows, &subtrees)
+    }
+
+    /// An action from an AT-SPI client (a screen reader, or an agent
+    /// driving the desktop through AT-SPI).
+    #[cfg(feature = "atspi")]
+    fn atspi_request(&mut self, request: accesskit::ActionRequest) {
+        self.set_synthetic(true);
+        let value = match &request.data {
+            Some(accesskit::ActionData::Value(v)) => Some(v.to_string()),
+            _ => None,
+        };
+        self.act(request.target_node, request.action, value);
+    }
+
+    /// Performs an accessibility action on a node of the merged tree.
+    fn act(&mut self, node: accesskit::NodeId, action: accesskit::Action, value: Option<String>) {
+        use a11y::Source;
+        let Some(source) = self.merger.source(node) else {
+            return;
+        };
+        let (window, target) = match source {
+            Source::Root => return,
+            Source::Window(window) => {
+                if matches!(action, accesskit::Action::Focus | accesskit::Action::Click) {
+                    self.shell.focus(window);
+                }
+                return;
+            }
+            Source::Shell(window, node, _) => {
+                self.shell
+                    .access_action(window, node, action, value.as_deref());
+                return;
+            }
+            Source::Chrome(node) => (None, node),
+            Source::App(window, node) => {
+                // Keys only reach the focused app.
+                self.shell.focus(window);
+                (Some(window), node)
+            }
+        };
+        let request = |action, data| {
+            egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+                action,
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: target,
+                data,
+            })
+        };
+        let events = if action == accesskit::Action::SetValue {
+            // Focus the field, select everything in it and type over it;
+            // egui applies the focus before the field reads the keys.
+            let select_all = egui::Modifiers::COMMAND;
+            vec![
+                request(accesskit::Action::Focus, None),
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: Some(egui::Key::A),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: select_all,
+                },
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: Some(egui::Key::A),
+                    pressed: false,
+                    repeat: false,
+                    modifiers: select_all,
+                },
+                egui::Event::Text(value.unwrap_or_default()),
+            ]
+        } else {
+            vec![request(action, None)]
+        };
+        let queue = match window {
+            None => Some(&mut self.chrome_events),
+            Some(w) => self.internal_events(Some(w)),
+        };
+        if let Some(queue) = queue {
+            queue.extend(events);
+        }
+    }
+
+    /// Feeds injected input through the same paths as the seat's.
+    fn inject(&mut self, input: Input) {
+        self.set_synthetic(true);
+        let time = self.now_ms();
+        let code = |button| match button {
+            MouseButton::Left => BTN_LEFT,
+            MouseButton::Right => BTN_RIGHT,
+            MouseButton::Middle => BTN_MIDDLE,
+        };
+        match input {
+            Input::Move { x, y } => self.move_pointer(x, y, time),
+            Input::Button { button, pressed } => {
+                let state = if pressed {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                };
+                self.pointer_button(code(button), state, time);
+            }
+            Input::Click { x, y, button } => {
+                self.move_pointer(x, y, time);
+                self.pointer_button(code(button), ButtonState::Pressed, time);
+                self.pointer_button(code(button), ButtonState::Released, time);
+            }
+            Input::Scroll { dx, dy } => {
+                self.axis(f64::from(dx), f64::from(dy), AxisSource::Wheel, time);
+            }
+            Input::Key { sym, mods } => {
+                if !self.press_key(sym, mods, time) {
+                    eprintln!("mcsapi-compositor: no key for {sym:?} in the keymap");
+                }
+            }
+            Input::Text(text) => {
+                for c in text.chars() {
+                    let sym = match c {
+                        '\n' => Keysym::Return,
+                        '\t' => Keysym::Tab,
+                        c => Keysym::from_char(c),
+                    };
+                    if !self.press_key(sym, Modifiers::default(), time) {
+                        self.type_into_egui(c);
+                    }
+                }
+            }
+        }
+    }
+
+    fn move_pointer(&mut self, x: i32, y: i32, time: u32) {
+        let size = self.backend.size();
+        self.pointer = (
+            f64::from(x.clamp(0, (size.w - 1).max(0))),
+            f64::from(y.clamp(0, (size.h - 1).max(0))),
+        )
+            .into();
+        self.pointer_motion(time);
+    }
+
+    /// Presses and releases the key that produces `sym`, holding `mods`
+    /// (and Shift, if the layout puts `sym` on the shifted level). Returns
+    /// `false` if the keymap has no such key.
+    fn press_key(&mut self, sym: Keysym, mods: Modifiers, time: u32) -> bool {
+        let Some((keycode, shifted)) = self.keycode_for(sym) else {
+            return false;
+        };
+        let mut held = Vec::new();
+        for (on, modifier) in [
+            (mods.ctrl, Keysym::Control_L),
+            (mods.alt, Keysym::Alt_L),
+            (mods.logo, Keysym::Super_L),
+            (mods.shift || shifted, Keysym::Shift_L),
+        ] {
+            if on && let Some((code, _)) = self.keycode_for(modifier) {
+                held.push(code);
+            }
+        }
+        for &code in &held {
+            self.key_event(code, KeyState::Pressed, time);
+        }
+        self.key_event(keycode, KeyState::Pressed, time);
+        self.key_event(keycode, KeyState::Released, time);
+        for &code in held.iter().rev() {
+            self.key_event(code, KeyState::Released, time);
+        }
+        true
+    }
+
+    /// The key producing `sym` in the active layout, and whether it needs
+    /// Shift.
+    fn keycode_for(&mut self, sym: Keysym) -> Option<(Keycode, bool)> {
+        let keyboard = self.seat.get_keyboard()?;
+        keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().ok()?;
+            let layout = xkb.active_layout();
+            // SAFETY: the keymap is only borrowed while the lock is held.
+            let keymap = unsafe { xkb.keymap() };
+            let mut found = None;
+            keymap.key_for_each(|_, code| {
+                if found.is_some() {
+                    return;
+                }
+                for level in 0..2 {
+                    if keymap
+                        .key_get_syms_by_level(code, layout.0, level)
+                        .contains(&sym)
+                    {
+                        found = Some((code, level == 1));
+                        return;
+                    }
+                }
+            });
+            found
+        })
+    }
+
+    fn key_event(&mut self, keycode: Keycode, state: KeyState, time: u32) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let pressed = state == KeyState::Pressed;
+        let raw: u32 = keycode.into();
+        keyboard.input::<(), _>(
+            self,
+            keycode,
+            state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, raw),
+        );
+    }
+
+    /// Types a character the keymap lacks into the egui context that would
+    /// receive keys: the chrome if it has keyboard focus, else the focused
+    /// in-process app. Wayland clients only take keys, so they miss it.
+    fn type_into_egui(&mut self, c: char) {
+        let chrome = self.chrome.ctx.egui_wants_keyboard_input()
+            || self.chrome.ctx.memory(|m| m.focused()).is_some();
+        let focused = self.shell.focused();
+        let events = if chrome {
+            Some(&mut self.chrome_events)
+        } else {
+            self.internal_events(focused)
+        };
+        if let Some(events) = events {
+            events.push(egui::Event::Text(c.to_string()));
+        }
+    }
+
+    /// Scrolls whatever is under the pointer (or the chrome), from a wheel,
+    /// a touchpad or injected input.
+    fn axis(&mut self, h: f64, v: f64, source: AxisSource, time: u32) {
+        let fingers = matches!(source, AxisSource::Finger | AxisSource::Continuous);
+        // libinput ends finger scrolling with an empty event.
+        let stop = fingers && h == 0.0 && v == 0.0;
+        let modifiers = self.egui_mods;
+        let wheel = |phase| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(-h as f32, -v as f32),
+            phase,
+            modifiers,
+        };
+        let on_layer = self.pointer_on_layer();
+        if !on_layer && self.chrome_wants_pointer() {
+            self.chrome_events.push(wheel(egui::TouchPhase::Move));
+            return;
+        }
+        let under = if on_layer { None } else { self.content_under() };
+        if fingers && let Some(window) = under.filter(|w| self.is_internal(*w)) {
+            // Bracket finger scrolling in Start and End so apps can
+            // follow it 1:1 and coast (mcsapi_ui::gesture).
+            let now = self.now_ms();
+            let ongoing = self.scroll.is_some_and(|(w, _)| w == window);
+            if !ongoing {
+                self.end_scroll();
+            }
+            let mut events = Vec::with_capacity(2);
+            if !ongoing && !stop {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::Vec2::ZERO,
+                    phase: egui::TouchPhase::Start,
+                    modifiers,
+                });
+            }
+            events.push(wheel(if stop {
+                egui::TouchPhase::End
+            } else {
+                egui::TouchPhase::Move
+            }));
+            self.scroll = (!stop).then_some((window, now));
+            if stop && !ongoing {
+                return;
+            }
+            self.internal_events(Some(window))
+                .expect("checked above")
+                .extend(events);
+            return;
+        }
+        if let Some(events) = self.internal_events(under) {
+            events.push(wheel(egui::TouchPhase::Move));
+            return;
+        }
+        let mut frame = AxisFrame::new(time).source(source);
+        if h != 0.0 {
+            frame = frame.value(Axis::Horizontal, h);
+        }
+        if v != 0.0 {
+            frame = frame.value(Axis::Vertical, v);
+        }
+        if stop {
+            frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.axis(self, frame);
+            pointer.frame(self);
         }
     }
 
@@ -1211,6 +1840,27 @@ impl<S: Shell> Host<S> {
 
     fn pointer_motion(&mut self, time: u32) {
         let pos = self.egui_pos();
+        if self.route == Some(Route::Layer) || (self.route.is_none() && self.pointer_on_layer()) {
+            self.chrome_events.push(egui::Event::PointerGone);
+            let target = self.pointer_target.take();
+            if let Some(events) = self.internal_events(target) {
+                events.push(egui::Event::PointerGone);
+            }
+            let focus = self.surface_under();
+            if let Some(pointer) = self.seat.get_pointer() {
+                pointer.motion(
+                    self,
+                    focus,
+                    &MotionEvent {
+                        location: self.pointer,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time,
+                    },
+                );
+                pointer.frame(self);
+            }
+            return;
+        }
         self.chrome_events.push(egui::Event::PointerMoved(pos));
         let route = self.route.unwrap_or(if self.chrome_wants_pointer() {
             Route::Chrome
@@ -1279,6 +1929,24 @@ impl<S: Shell> Host<S> {
             _ => None,
         };
         if pressed && self.route.is_none() {
+            // A click on a panel that takes the keyboard gives it the
+            // keyboard; a click anywhere else takes it back.
+            let layer = self
+                .pointer_on_layer()
+                .then(|| self.layer_under())
+                .flatten()
+                .map(|l| (l.role, l.window.toplevel().map(|t| t.wl_surface().clone())));
+            let on_layer = layer.is_some();
+            self.layer_focus = match layer {
+                Some((Role::Panel { keyboard: true, .. }, surface)) => surface,
+                _ => None,
+            };
+            if on_layer {
+                self.route = Some(Route::Layer);
+                self.sync();
+            }
+        }
+        if pressed && self.route.is_none() {
             self.route = Some(if self.chrome_wants_pointer() {
                 Route::Chrome
             } else if button == BTN_LEFT {
@@ -1300,6 +1968,20 @@ impl<S: Shell> Host<S> {
             modifiers: self.egui_mods,
         });
         match self.route.unwrap_or(Route::Content(None)) {
+            Route::Layer => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button,
+                            state,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    );
+                    pointer.frame(self);
+                }
+            }
             Route::Chrome => {
                 self.chrome_events.extend(pointer_event);
                 // The cancelled press's client lost focus, so this reaches
@@ -1405,8 +2087,38 @@ impl<S: Shell> Host<S> {
                 alt: modifiers.alt,
             },
         };
+        // An overlay gets every key, shell shortcuts included; a panel
+        // holding the keyboard gets what the shell leaves.
+        if self.overlay().is_some() {
+            return FilterResult::Forward;
+        }
+        if self.layer_focus.is_some() {
+            return match shell_key_route(&mut self.shell, &key, consumed_release) {
+                KeyRoute::Consume => {
+                    if pressed {
+                        self.consumed_keys.insert(keycode);
+                    }
+                    FilterResult::Intercept(())
+                }
+                _ => FilterResult::Forward,
+            };
+        }
+        let chrome_focus = self.chrome.ctx.memory(|m| m.focused());
         let route = match shell_key_route(&mut self.shell, &key, consumed_release) {
-            KeyRoute::Client if self.chrome.ctx.egui_wants_keyboard_input() => KeyRoute::Chrome,
+            // A chrome widget focused from the keyboard (Tab) or by a
+            // screen reader keeps the keys until Escape hands them back.
+            KeyRoute::Client if chrome_focus.is_some() && pressed && sym == Keysym::Escape => {
+                if let Some(id) = chrome_focus {
+                    self.chrome.ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                self.consumed_keys.insert(keycode);
+                return FilterResult::Intercept(());
+            }
+            KeyRoute::Client
+                if self.chrome.ctx.egui_wants_keyboard_input() || chrome_focus.is_some() =>
+            {
+                KeyRoute::Chrome
+            }
             route => route,
         };
         let mods = self.egui_mods;
@@ -1493,6 +2205,7 @@ impl<S: Shell> Host<S> {
             self.end_scroll();
         }
         self.run_commands();
+        self.agent_step();
         self.sync();
         let size = self.backend.size();
         let screen =
@@ -1508,11 +2221,13 @@ impl<S: Shell> Host<S> {
             ..Default::default()
         };
         let pointer = self.egui_pos();
+        let accent = self.shell.theme().accent;
         let shell = &mut self.shell;
-        let output = self.chrome.ctx.run_ui(input, |root| {
+        let mut output = self.chrome.ctx.run_ui(input, |root| {
             shell.chrome(root, elapsed);
-            paint_cursor(root.ctx(), pointer);
+            mcsapi_ui::paint_focus_ring(root.ctx(), accent);
         });
+        self.chrome_access = output.platform_output.accesskit_update.take();
         let chrome = Pass {
             primitives: self
                 .chrome
@@ -1521,6 +2236,8 @@ impl<S: Shell> Host<S> {
             textures: output.textures_delta,
         };
 
+        // Its own pass, so it stays above overlays drawn after the chrome.
+        let cursor = self.paint_only(screen, time, |_, painter| paint_cursor(painter, pointer));
         let blurs = self.shell.blur_regions();
         let placements = self.shell.placements();
         let background = self.paint_only(screen, time, |shell, painter| {
@@ -1535,7 +2252,7 @@ impl<S: Shell> Host<S> {
             contents.push(self.run_internal(p, time));
         }
 
-        if let Err(e) = self.draw(
+        let drawn = self.draw(
             size,
             &placements,
             background,
@@ -1543,8 +2260,25 @@ impl<S: Shell> Host<S> {
             contents,
             &blurs,
             chrome,
-        ) {
-            eprintln!("mcsapi-compositor: render failed: {e}");
+            cursor,
+        );
+        let capture = match drawn {
+            Ok(capture) => capture.map(Ok),
+            Err(e) => {
+                eprintln!("mcsapi-compositor: render failed: {e}");
+                Some(Err(e.to_string()))
+            }
+        };
+        if let Some(capture) = capture {
+            for request in std::mem::take(&mut self.captures) {
+                self.shell.captured(request, capture.clone());
+            }
+        }
+        #[cfg(feature = "atspi")]
+        if let Some(mut atspi) = self.atspi.take()
+            && atspi.update(|| self.build_tree())
+        {
+            self.atspi = Some(atspi);
         }
 
         let now = self.start.elapsed();
@@ -1590,6 +2324,8 @@ impl<S: Shell> Host<S> {
             egui,
             events,
             title,
+            access,
+            ..
         }) = self.windows.get_mut(&p.window)
         else {
             return None;
@@ -1609,6 +2345,7 @@ impl<S: Shell> Host<S> {
             ..Default::default()
         };
         let mut output = mcsapi_ui::run_frame(app, &egui.ctx, input, &theme);
+        *access = output.platform_output.accesskit_update.take();
         for command in output.platform_output.commands {
             if let egui::OutputCommand::CopyText(text) = command {
                 set_data_device_selection(
@@ -1657,7 +2394,8 @@ impl<S: Shell> Host<S> {
         contents: Vec<Option<Pass>>,
         blurs: &[Blur],
         mut chrome: Pass,
-    ) -> Result {
+        mut cursor: Pass,
+    ) -> std::result::Result<Option<Capture>, Box<dyn std::error::Error>> {
         let scale = Scale::from(1.0);
         let screen_px = [size.w as u32, size.h as u32];
         let full = Rectangle::from_size(size);
@@ -1735,6 +2473,27 @@ impl<S: Shell> Host<S> {
             };
             surfaces.push(elements);
         }
+        // Panels go under the chrome, so its popups can overlap them;
+        // overlays go above it.
+        let mut panels = Vec::new();
+        let mut overlays = Vec::new();
+        for layer in &self.layers {
+            let Some(loc) = self.space.element_location(&layer.window) else {
+                continue;
+            };
+            let elements = layer
+                .window
+                .render_elements::<WaylandSurfaceRenderElement<_>>(
+                    renderer,
+                    loc.to_physical_precise_round(scale),
+                    scale,
+                    1.0,
+                );
+            match layer.role {
+                Role::Overlay => overlays.push(elements),
+                _ => panels.push(elements),
+            }
+        }
 
         let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
         frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
@@ -1754,17 +2513,7 @@ impl<S: Shell> Host<S> {
                 let painter = egui.painter.as_mut().expect("created above");
                 paint(&gl, painter, screen_px, &mut pass);
             }
-            // Elements come topmost first.
-            for element in elements.iter().rev() {
-                let dst = element.geometry(scale);
-                element.draw(
-                    &mut frame,
-                    element.src(),
-                    dst,
-                    &[Rectangle::from_size(dst.size)],
-                    &[],
-                )?;
-            }
+            draw_surfaces(&mut frame, elements, scale)?;
         }
         if !blurs.is_empty() {
             if self.blurrer.is_none() && !self.blur_unavailable {
@@ -1785,19 +2534,29 @@ impl<S: Shell> Host<S> {
                 reset_gl(&gl, screen_px);
             }
         }
+        for elements in &panels {
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
         let chrome_painter = self.chrome.painter.as_mut().expect("created above");
         paint(&gl, chrome_painter, screen_px, &mut chrome);
+        for elements in &overlays {
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
+        let deco = self.decorations.painter.as_mut().expect("created above");
+        paint(&gl, deco, screen_px, &mut cursor);
+        let capture = (!self.captures.is_empty()).then(|| read_frame(&gl, screen_px));
         let _sync = frame.finish()?;
         drop(framebuffer);
         if offscreen {
-            return self.present(size);
+            self.present(size)?;
+            return Ok(capture);
         }
         match &mut self.backend {
             Backend::Winit(backend) => backend.submit(Some(&[full]))?,
             #[cfg(feature = "kms")]
             Backend::Kms(_) => {}
         }
-        Ok(())
+        Ok(capture)
     }
 
     /// Copies the offscreen frame to the screen.
@@ -1865,6 +2624,14 @@ impl<S: Shell> Host<S> {
         let Some(toplevel) = window.toplevel().cloned() else {
             return;
         };
+        if let Some(role) = self.role_of(surface).filter(|r| *r != Role::App) {
+            self.layers.push(Layer { window, role });
+            self.sync();
+            if !toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+            }
+            return;
+        }
         let (app_id, title) = with_states(surface, |states| {
             states
                 .data_map
@@ -1895,12 +2662,28 @@ fn shell_key_route(shell: &mut impl Shell, key: &KeyInput, consumed_release: boo
     }
 }
 
-/// Draws the pointer above everything (the nested window hides the host's).
-fn paint_cursor(ctx: &egui::Context, at: egui::Pos2) {
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Debug,
-        egui::Id::new("mcsapi-cursor"),
-    ));
+/// Draws one window's surfaces; Smithay lists them topmost first.
+fn draw_surfaces(
+    frame: &mut GlesFrame<'_, '_>,
+    elements: &[WaylandSurfaceRenderElement<GlesRenderer>],
+    scale: Scale<f64>,
+) -> Result {
+    for element in elements.iter().rev() {
+        let dst = element.geometry(scale);
+        element.draw(
+            frame,
+            element.src(),
+            dst,
+            &[Rectangle::from_size(dst.size)],
+            &[],
+        )?;
+    }
+    Ok(())
+}
+
+/// Draws the pointer, which the frame paints last (the nested window hides
+/// the host's).
+fn paint_cursor(painter: &egui::Painter, at: egui::Pos2) {
     let points = [
         (0.0, 0.0),
         (0.0, 17.0),
@@ -1931,6 +2714,37 @@ fn paint(gl: &glow::Context, painter: &mut egui_glow::Painter, screen: [u32; 2],
 }
 
 /// Restores the GL state Smithay's renderer relies on.
+/// Reads the bound framebuffer back as top-to-bottom RGBA rows.
+fn read_frame(gl: &glow::Context, [w, h]: [u32; 2]) -> Capture {
+    use glow::HasContext as _;
+    let row = w as usize * 4;
+    let mut rgba = vec![0; row * h as usize];
+    // SAFETY: the buffer holds exactly w×h RGBA pixels and the frame's
+    // context is current.
+    unsafe {
+        gl.read_pixels(
+            0,
+            0,
+            w as i32,
+            h as i32,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(&mut rgba)),
+        );
+    }
+    // GL rows run bottom to top; the framebuffer's alpha is meaningless.
+    let mut flipped = Vec::with_capacity(rgba.len());
+    for line in rgba.chunks_exact(row).rev() {
+        let (pixels, _) = line.as_chunks::<4>();
+        flipped.extend(pixels.iter().flat_map(|p| [p[0], p[1], p[2], 255]));
+    }
+    Capture {
+        width: w,
+        height: h,
+        rgba: flipped,
+    }
+}
+
 fn reset_gl(gl: &glow::Context, screen: [u32; 2]) {
     use glow::HasContext as _;
     // SAFETY: plain state resets on the current context.
@@ -1996,6 +2810,12 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
             }
             if let Some((_, window)) = self.wayland_window_of(&root) {
                 window.on_commit();
+            } else if let Some(layer) = self
+                .layers
+                .iter()
+                .find(|l| l.window.toplevel().is_some_and(|t| t.wl_surface() == &root))
+            {
+                layer.window.on_commit();
             }
         }
         self.manage_on_first_commit(surface);
@@ -2023,6 +2843,22 @@ impl<S: Shell + 'static> XdgShellHandler for Host<S> {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.unmanaged
             .retain(|w| w.toplevel().is_some_and(|t| t != &surface));
+        if let Some(i) = self
+            .layers
+            .iter()
+            .position(|l| l.window.toplevel().is_some_and(|t| t == &surface))
+        {
+            let layer = self.layers.remove(i);
+            self.space.unmap_elem(&layer.window);
+            if self.layer_focus.as_ref() == Some(surface.wl_surface()) {
+                self.layer_focus = None;
+            }
+            if self.route == Some(Route::Layer) {
+                self.route = None;
+            }
+            self.sync();
+            return;
+        }
         if let Some((id, window)) = self
             .wayland_window_of(surface.wl_surface())
             .map(|(id, w)| (id, w.clone()))
@@ -2036,6 +2872,22 @@ impl<S: Shell + 'static> XdgShellHandler for Host<S> {
                     keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
                 }
             }
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        let Some((id, _)) = self.wayland_window_of(surface.wl_surface()) else {
+            return;
+        };
+        let app_id = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok())
+                .and_then(|d| d.app_id.clone())
+        });
+        if let Some(app_id) = app_id {
+            self.shell.set_app_id(id, &app_id);
         }
     }
 

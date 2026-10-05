@@ -8,8 +8,8 @@ use std::{
 use mcsapi::WindowId;
 
 use crate::{
-    Blur, ClientRequest, Command, KeyInput, KeyRoute, OutputTiming, Placement, Press, Shell, Theme,
-    egui,
+    Blur, Capture, ClientRequest, Command, KeyInput, KeyRoute, OutputTiming, Placement, Press,
+    Shell, Theme, a11y, accesskit, egui,
 };
 
 /// Calls a shell method through Subsecond's jump table when the `hotpatch`
@@ -95,6 +95,10 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::set_title, &mut self.0, window, title)
     }
 
+    fn set_app_id(&mut self, window: WindowId, app_id: &str) {
+        hot!(S::set_app_id, &mut self.0, window, app_id)
+    }
+
     fn focus(&mut self, window: WindowId) {
         hot!(S::focus, &mut self.0, window)
     }
@@ -163,8 +167,38 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::spawn_argv, &mut self.0, app)
     }
 
+    fn set_reserved(&mut self, reserved: crate::Reserved) {
+        hot!(S::set_reserved, &mut self.0, reserved)
+    }
+
     fn take_commands(&mut self) -> Vec<Command> {
         hot!(S::take_commands, &mut self.0)
+    }
+
+    fn access_subtrees(&mut self) -> Vec<a11y::Subtree> {
+        hot!(S::access_subtrees, &mut self.0)
+    }
+
+    fn access_action(
+        &mut self,
+        window: WindowId,
+        node: accesskit::NodeId,
+        action: accesskit::Action,
+        value: Option<&str>,
+    ) {
+        hot!(S::access_action, &mut self.0, window, node, action, value)
+    }
+
+    fn described(&mut self, request: u64, tree: a11y::Snapshot) {
+        hot!(S::described, &mut self.0, request, tree)
+    }
+
+    fn captured(&mut self, request: u64, frame: Result<Capture, String>) {
+        hot!(S::captured, &mut self.0, request, frame)
+    }
+
+    fn input_source(&mut self, synthetic: bool) {
+        hot!(S::input_source, &mut self.0, synthetic)
     }
 }
 

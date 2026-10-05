@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 mcsapi-components.workspace = true
+mcsapi-theme.workspace = true
 mcsapi-ui.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true

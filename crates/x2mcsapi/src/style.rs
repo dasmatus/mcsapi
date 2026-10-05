@@ -5,6 +5,7 @@ use std::fmt;
 use mcsapi_components::{Button, ButtonSize, Card, Input, Tokens};
 use mcsapi_ui::Theme;
 use mcsapi_ui::egui::{self, Color32, FontFamily, Rect, Shape, TextStyle};
+use mcsapi_ui::theme::Scheme;
 
 /// Everything needed to restyle a foreign app.
 ///
@@ -21,6 +22,8 @@ pub struct Style {
     pub geometry: Geometry,
     /// Font families the components draw with.
     pub fonts: Fonts,
+    /// Light or dark, for the base each foreign toolkit starts from.
+    pub scheme: Scheme,
 }
 
 impl Default for Style {
@@ -32,7 +35,31 @@ impl Default for Style {
 impl Style {
     /// Reads the style of the components drawn with `theme`.
     pub fn from_theme(theme: &Theme) -> Self {
-        Self::from_tokens(Tokens::from_theme(theme))
+        let mut style = Self::from_tokens(Tokens::from_theme(theme));
+        if theme.background.intensity() > 0.5 {
+            style.scheme = Scheme::Light;
+        }
+        style
+    }
+
+    /// Reads the style of the components drawn with a full theme from the
+    /// theming engine: its tokens and scheme, and its font families in
+    /// front of the ones egui embeds, as fallbacks.
+    pub fn from_spec(theme: &mcsapi_ui::theme::Theme) -> Self {
+        let mut style = Self::from_tokens(Tokens::from_spec(theme));
+        style.scheme = theme.scheme;
+        let f = &theme.fonts;
+        let front = |families: &mut Vec<String>, family: &str| {
+            families.retain(|known| known != family);
+            families.insert(0, family.to_owned());
+        };
+        front(&mut style.fonts.proportional, &f.sans);
+        front(&mut style.fonts.monospace, &f.monospace);
+        style.fonts.weight = f.sans_weight;
+        style.fonts.body_size = f.size;
+        style.fonts.small_size = f.small_size;
+        style.fonts.monospace_size = f.monospace_size;
+        style
     }
 
     /// Reads the style of the components drawn with `tokens`.
@@ -47,6 +74,7 @@ impl Style {
             tokens,
             geometry,
             fonts,
+            scheme: Scheme::Dark,
         }
     }
 

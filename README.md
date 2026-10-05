@@ -12,6 +12,7 @@ member:
 | Crate | Path | Purpose |
 | --- | --- | --- |
 | `mcsapi` | `crates/mcsapi` | Desktop policy, layouts, toolkit selection, and shell widgets (the original library; public API unchanged). |
+| `mcsapi-theme` | `crates/mcsapi-theme` | Theming engine: theme files, derived component tokens, and exports for the freedesktop appearance settings, GTK settings, cursors, Android resources and JSON. No dependencies, so any process can read the theme. |
 | `mcsapi-ui` | `crates/mcsapi-ui` | UI toolkit for apps: an `App` trait drawn with egui and the shared shell `Theme`, plus 1:1 touchpad gestures (`gesture`). |
 | `mcsapi-runtime` | `crates/mcsapi-runtime` | Separate runtime for running apps: app registration and instance lifecycle. Starter. |
 | `mcsapi-components-gpui` | `crates/mcsapi-components-gpui` | The `mcsapi-components` library as native GPUI elements, behind its `gpui` feature. |
@@ -128,8 +129,10 @@ loop or automatically migrate an already-running UI after a driver failure.
   `Desktop::switch_to`.
 - `widgets::Theme` supplies the shared colors. Selection has a text label, not
   only a color change. egui uses native button focus/activation. GPUI supports
-  focus and Enter/Space activation; host-level focus traversal and accessibility
-  integration remain the host's responsibility.
+  focus and Enter/Space activation; host-level focus traversal remains the
+  host's responsibility. `mcsapi-compositor` publishes egui chrome and apps
+  over AT-SPI; a GPUI program out of process registers its own nodes with the
+  shell (derisk's `register_tree`).
 
 Visual inspiration: [React Bits](https://reactbits.dev) (card emphasis),
 [Aceternity UI](https://ui.aceternity.com) (workspace-like tabs), and
@@ -144,6 +147,36 @@ process platform output, and schedule requested repaints. GL/wgpu painters still
 need functioning drivers; a machine with no usable graphics backend needs a
 separately supplied software painter or a headless control path. The example
 intentionally clears texture deltas because it does not present a window.
+
+## Theming
+
+`mcsapi-theme` describes how the desktop looks, once, for every toolkit:
+a light or dark scheme, six colors (background, surface, foreground,
+border, accent, destructive), fonts, icon and cursor themes, and a corner
+radius. egui components (`Tokens::from_spec`), GPUI components (the same
+name in `mcsapi-components-gpui`), `x2mcsapi --theme` for web, GTK and Qt,
+and the exports in `mcsapi_theme::export` all derive from it, so changing
+the theme changes every app.
+
+Themes are small TOML files, `<id>.theme`, and may inherit from another:
+
+```toml
+name = "Dusk"
+inherits = "derisk-dark"
+
+[colors]
+accent = "sky"        # a built-in accent name, or "#38bdf8"
+
+[shape]
+radius = 8
+```
+
+`Library::xdg("derisk")` finds them under `derisk/themes` in the XDG data
+directories, user first; `derisk-dark`, `derisk-light` and
+`derisk-high-contrast` are built in and can be shadowed. Accents are kept
+at 3:1 contrast against the background (WCAG 1.4.11), darkened or
+lightened only as far as needed. Unknown keys load with a warning, so
+themes written for newer versions still work.
 
 ## Touchpad gestures
 

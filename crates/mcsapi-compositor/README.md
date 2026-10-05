@@ -34,6 +34,24 @@ session window is on; `Shell::frame_interval` can slow them down, and
 with VRR, a whole number of refreshes without; declare VRR with
 `Compositor::vrr`, since a nested session cannot detect it).
 
+Accessibility: the host merges the chrome's egui tree, every in-process
+app's tree, a node per window and any `Shell::access_subtrees` (title-bar
+buttons, nodes an out-of-process program registered) into one AccessKit
+tree with IDs that stay the same while an element exists. With the default
+`atspi` feature it is published over AT-SPI for screen readers, and
+screen-reader actions come back through the same paths as real input. The
+focused widget gets a visible ring (`mcsapi_ui::paint_focus_ring`) after
+keyboard or AT-SPI focus, not after a click.
+
+Computer use: `Command::Describe` returns that tree flattened
+(`a11y::Snapshot`), `Command::Capture` reads back a frame, `Command::Act`
+performs an accessibility action on an element, and `Command::Input`
+injects pointer and keyboard input into the seat. Act and Input run one per
+frame, so each click lands on what the last one drew, and a Describe or
+Capture queued after them sees their result. While one runs,
+`Shell::input_source(true)` tells the shell the input is synthetic, so it
+can refuse to let an agent confirm what only a person should.
+
 Not yet: more than one display on the bare seat, hotplug, direct scanout of
 client buffers, layer-shell, XWayland, popup grabs, linux-dmabuf.
 
@@ -95,3 +113,31 @@ compositor.launch("foot").run()?;
 
 Building needs `libxkbcommon-dev`. Running needs EGL/GLES drivers (Mesa's
 llvmpipe works, also under Xvfb).
+
+## GPUI runtime clients
+
+GPUI draws only into windows it opens itself, as an ordinary Wayland client,
+and has no layer-shell, so a shell cannot paint GPUI inside the compositor.
+Instead the compositor starts GPUI programs as runtime clients, on a private
+connection it creates with a socket pair and hands over as `WAYLAND_SOCKET`.
+Their toplevels get the role they were started with, not one they ask for:
+
+```rust,ignore
+use mcsapi_compositor::{Edge, Role, RuntimeClient};
+
+let panel = Role::Panel { edge: Edge::Top, size: 32, keyboard: false };
+compositor
+    .runtime(RuntimeClient::new(["my-gpui-panel"], panel).restart(true))
+    .runtime(RuntimeClient::new(["my-gpui-launcher"], Role::Overlay))
+    .run()?;
+```
+
+- `Role::Panel` sits on its edge above windows and below the shell's chrome,
+  and its strip is passed to `Shell::set_reserved` to keep windows out.
+- `Role::Overlay` covers the output above the chrome and gets every key and
+  pointer event while mapped.
+- `Role::App` is managed like any other window.
+
+The child also gets `MCSAPI_ROLE` (`app`, `panel` or `overlay`). A shell can
+start one at run time with `Command::Runtime`. A client with `restart` comes
+back when it exits, unless it ran for less than two seconds.

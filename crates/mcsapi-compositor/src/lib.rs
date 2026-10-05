@@ -11,6 +11,11 @@
 //! - **In-process apps** registered with [`mcsapi_runtime`] and drawn with
 //!   [`mcsapi_ui::App`], through an [`Apps`] provider. They get the same
 //!   title bars, tiling and focus as Wayland clients.
+//! - **Runtime clients** ([`RuntimeClient`]): programs the compositor starts
+//!   itself on a private connection, usually GPUI apps. Because the
+//!   compositor made the connection, it trusts the [`Role`] it gave them, so
+//!   a GPUI window can be a panel or a full-screen overlay without a
+//!   layer-shell protocol (which GPUI does not speak).
 //!
 //! Each frame paints the wallpaper, then for every window from bottom to top
 //! its decoration and its content, then blurs the areas under translucent
@@ -71,14 +76,19 @@
 #![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod a11y;
+#[cfg(feature = "atspi")]
+mod atspi;
 mod blur;
 mod host;
 mod hot;
 #[cfg(feature = "kms")]
 mod kms;
+mod runtime;
 
 use std::{fmt, time::Duration};
 
+pub use accesskit;
 use mcsapi::{Geometry, WindowId};
 pub use mcsapi_runtime::{AppId, InstanceId};
 pub use mcsapi_ui::{App, GestureEvent, Theme, egui};
@@ -86,6 +96,7 @@ pub use smithay::input::keyboard::Keysym;
 use smithay::reexports::calloop::channel;
 
 pub use hot::Hot;
+pub use runtime::{Edge, Reserved, Role, RuntimeClient};
 
 /// Where a window is drawn this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -273,8 +284,106 @@ pub enum Command {
     Launch(String),
     /// Ask a window to close (in-process apps are stopped).
     Close(WindowId),
+    /// Start a runtime client (see [`RuntimeClient`]).
+    Runtime(RuntimeClient),
     /// End the session.
     Quit,
+    /// Build the accessibility tree and pass it to [`Shell::described`]
+    /// with this request number.
+    Describe(u64),
+    /// Read back the next frame and pass it to [`Shell::captured`] with
+    /// this request number.
+    Capture(u64),
+    /// Perform an accessibility action on an element of the tree, as a
+    /// screen reader would. Counts as synthetic input
+    /// ([`Shell::input_source`]). Act and [`Command::Input`] run one per
+    /// frame in the order sent, so egui sees each click on the frame the
+    /// last one produced.
+    Act {
+        /// [`a11y::Element::id`].
+        element: u64,
+        /// The action; [`accesskit::Action::SetValue`] focuses the element
+        /// and replaces its text with `value`.
+        action: accesskit::Action,
+        /// Text for [`accesskit::Action::SetValue`].
+        value: Option<String>,
+    },
+    /// Inject input as if it came from the seat (see [`Input`]). Paced
+    /// like [`Command::Act`], and synthetic as well.
+    Input(Input),
+}
+
+/// A mouse button.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseButton {
+    /// Left (primary).
+    Left,
+    /// Right (secondary).
+    Right,
+    /// Middle.
+    Middle,
+}
+
+/// Input injected with [`Command::Input`], for agents and automation. It
+/// takes the same path as real input, so shell shortcuts, the chrome and
+/// clients all see it, and the shell is told it is synthetic first.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Input {
+    /// Move the pointer to a logical, output-relative position.
+    Move {
+        /// X.
+        x: i32,
+        /// Y.
+        y: i32,
+    },
+    /// Press or release a button where the pointer is.
+    Button {
+        /// Which button.
+        button: MouseButton,
+        /// Press or release.
+        pressed: bool,
+    },
+    /// Move there, then press and release.
+    Click {
+        /// X.
+        x: i32,
+        /// Y.
+        y: i32,
+        /// Which button.
+        button: MouseButton,
+    },
+    /// Scroll where the pointer is, in logical pixels (positive is down
+    /// and right).
+    Scroll {
+        /// Horizontal.
+        dx: i32,
+        /// Vertical.
+        dy: i32,
+    },
+    /// Press and release a key with modifiers held, for example
+    /// `Keysym::s` with `ctrl`.
+    Key {
+        /// The key, without modifiers applied.
+        sym: Keysym,
+        /// Modifiers to hold around it.
+        mods: Modifiers,
+    },
+    /// Type text. Characters the keyboard layout has are typed as key
+    /// presses; others reach in-process apps and the chrome directly and
+    /// are skipped for Wayland clients.
+    Text(String),
+}
+
+/// A frame read back with [`Command::Capture`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Capture {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Rows top to bottom, 4 bytes (RGBA) per pixel.
+    pub rgba: Vec<u8>,
 }
 
 /// A request a client made about its own window.
@@ -302,6 +411,10 @@ pub trait Shell: 'static {
     /// The output was resized.
     fn set_output(&mut self, size: (i32, i32));
 
+    /// Runtime panels ([`Role::Panel`]) now cover these strips along the
+    /// output's edges; keep windows out of them.
+    fn set_reserved(&mut self, _reserved: Reserved) {}
+
     /// The keyboard-focused window.
     fn focused(&self) -> Option<WindowId>;
 
@@ -310,6 +423,11 @@ pub trait Shell: 'static {
 
     /// A window changed its title.
     fn set_title(&mut self, _window: WindowId, _title: &str) {}
+
+    /// A window changed its app ID. GPUI and some other toolkits set it
+    /// only after the commit that maps the window, so
+    /// [`Shell::map_window`] can see `app`.
+    fn set_app_id(&mut self, _window: WindowId, _app_id: &str) {}
 
     /// Focus a window (secondary clicks on window content).
     fn focus(&mut self, _window: WindowId) {}
@@ -390,6 +508,38 @@ pub trait Shell: 'static {
     fn take_commands(&mut self) -> Vec<Command> {
         Vec::new()
     }
+
+    /// Accessibility nodes the shell adds under windows: buttons it paints
+    /// on title bars, or a tree an out-of-process program registered.
+    /// Called whenever the tree is built.
+    fn access_subtrees(&mut self) -> Vec<a11y::Subtree> {
+        Vec::new()
+    }
+
+    /// An accessibility action on one of the shell's [`a11y::Subtree`]
+    /// nodes, from a screen reader or [`Command::Act`]. `node` is the
+    /// subtree's own ID.
+    fn access_action(
+        &mut self,
+        _window: WindowId,
+        _node: accesskit::NodeId,
+        _action: accesskit::Action,
+        _value: Option<&str>,
+    ) {
+    }
+
+    /// The tree asked for with [`Command::Describe`].
+    fn described(&mut self, _request: u64, _tree: a11y::Snapshot) {}
+
+    /// The frame asked for with [`Command::Capture`].
+    fn captured(&mut self, _request: u64, _frame: Result<Capture, String>) {}
+
+    /// The input that follows is synthetic (`true`: injected with
+    /// [`Command::Input`] or [`Command::Act`], or an action from an AT-SPI
+    /// client) or comes from the seat (`false`). Called when that changes.
+    /// A shell can refuse to let synthetic input confirm what only a person
+    /// should, such as powering off.
+    fn input_source(&mut self, _synthetic: bool) {}
 }
 
 /// In-process apps the compositor can launch, usually backed by an
@@ -444,6 +594,7 @@ pub struct Compositor<S> {
     title: String,
     vrr: bool,
     launch: Vec<String>,
+    runtime: Vec<RuntimeClient>,
     jobs: Option<channel::Channel<Job<S>>>,
 }
 
@@ -457,6 +608,7 @@ impl<S: Shell + 'static> Compositor<S> {
             title: "mcsapi".into(),
             vrr: false,
             launch: Vec::new(),
+            runtime: Vec::new(),
             jobs: None,
         }
     }
@@ -490,6 +642,13 @@ impl<S: Shell + 'static> Compositor<S> {
     /// Launches an app once the session is up (see [`Command::Launch`]).
     pub fn launch(mut self, app: impl Into<String>) -> Self {
         self.launch.push(app.into());
+        self
+    }
+
+    /// Starts a runtime client when the session is up, for example a GPUI
+    /// panel (see [`RuntimeClient`]).
+    pub fn runtime(mut self, client: RuntimeClient) -> Self {
+        self.runtime.push(client);
         self
     }
 

@@ -1,0 +1,13 @@
+[package]
+name = "mcsapi-theme"
+description = "Toolkit-neutral theming engine for mcsapi desktops: theme files, derived tokens, and exports for foreign toolkits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# No dependencies on purpose: egui, GPUI, the compositor and processes that
+# never draw (the Android translation layer's theme bridge, a portal backend)
+# all read the same theme, so it must not pull in any toolkit.
+[dependencies]
