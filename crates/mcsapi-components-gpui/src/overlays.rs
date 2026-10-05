@@ -3,7 +3,7 @@
 use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    AnchoredPositionMode, AnyElement, App, Context, Corner, Div, ElementId, FontWeight, Global,
+    Anchor, AnchoredPositionMode, AnyElement, App, Context, Div, ElementId, FontWeight, Global,
     Hsla, IntoElement, KeyDownEvent, ParentElement, Render, RenderOnce, SharedString, Stateful,
     Styled, Window, anchored, canvas, deferred, div, point, prelude::*, px,
 };
@@ -386,7 +386,7 @@ pub fn toast(cx: &mut App, title: impl Into<SharedString>, description: Option<S
     let timer = cx.background_executor().timer(duration);
     cx.spawn(async move |cx| {
         timer.await;
-        cx.update(|cx| dismiss(cx, id)).ok();
+        cx.update(|cx| dismiss(cx, id));
     })
     .detach();
 }
@@ -415,7 +415,7 @@ impl RenderOnce for Toaster {
         deferred(
             anchored()
                 .position_mode(AnchoredPositionMode::Window)
-                .anchor(Corner::BottomRight)
+                .anchor(Anchor::BottomRight)
                 .position(point(viewport.width - px(16.0), viewport.height - px(16.0)))
                 .child(
                     div()

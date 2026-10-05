@@ -14,12 +14,13 @@ mcsapi.workspace = true
 mcsapi-components.workspace = true
 mcsapi-ui.workspace = true
 gpui = { workspace = true, optional = true }
+gpui_platform = { workspace = true, optional = true }
 mcsapi-components-gpui = { workspace = true, optional = true }
 
 [features]
 # The gallery window, drawn with GPUI. Off by default so CI and library users
 # do not build GPUI and its Wayland and Vulkan system libraries.
-gpui = ["dep:gpui", "mcsapi/gpui", "mcsapi-components-gpui/gpui"]
+gpui = ["dep:gpui", "dep:gpui_platform", "mcsapi/gpui", "mcsapi-components-gpui/gpui"]
 
 [[bin]]
 name = "mcsapi-gallery"

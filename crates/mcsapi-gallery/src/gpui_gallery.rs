@@ -5,9 +5,9 @@
 //! version. The crate's tests fail while a specimen has no renderer.
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Div, Entity, FontWeight, IntoElement,
-    ParentElement, Render, SharedString, Styled, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Div, Entity, FontWeight, IntoElement, ParentElement, Render,
+    SharedString, Styled, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*,
+    px, size,
 };
 use mcsapi::{Desktop, WindowId, WorkspaceId, widgets::gpui_workspace_bar};
 use mcsapi_components_gpui::{
@@ -74,7 +74,7 @@ pub struct Options {
 
 /// Opens the gallery in a GPUI window and runs until it closes.
 pub fn run(options: Options) {
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         mcsapi_components_gpui::bind_text_input_keys(cx);
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
         cx.open_window(
@@ -89,7 +89,7 @@ pub fn run(options: Options) {
             |window, cx| cx.new(|cx| GalleryView::new(&options, window, cx)),
         )
         .expect("the gallery window opens");
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
 }

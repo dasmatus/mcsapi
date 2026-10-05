@@ -108,8 +108,14 @@ Debian/Ubuntu its build prerequisites include `libwayland-dev`,
 `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libfontconfig1-dev`,
 `libssl-dev`, and `libvulkan-dev`, plus a C/C++ compiler and `pkg-config`.
 Runtime use also requires a display and compatible graphics drivers.
-The GPUI feature constrains `libc` for compatibility with GPUI's old transitive
-`xattr` dependency; remove that constraint when upstream updates the dependency.
+GPUI is Zed's in-tree GPUI from Sonne (`github.com/dasmatus/sonne`), pinned by
+revision in the workspace `Cargo.toml`, with `gpui_platform` choosing Wayland
+or X11 at run time. A git dependency's `[patch]` section does not reach the
+workspace that depends on it, so a workspace building GPUI repeats Zed's
+`async-task` and `calloop` patches from mcsapi's `Cargo.toml`, and pins
+`calloop` to the patched 0.14.3 with
+`cargo update -p calloop@0.14.5 --precise 0.14.3` when the resolver picks a
+newer release from crates.io.
 
 `Toolkit::initialize(capabilities, initialize_gpui)` prefers GPUI only if the
 feature is compiled, the host has verified hardware acceleration and required
@@ -120,7 +126,7 @@ alone are not capability probes.
 
 The callback returns the host's initialized GPUI handle, not a placeholder
 success value. Run it inside the host's application context and include fallible
-window/renderer setup. Panics are not caught; GPUI's `Application::new()` is not
+window/renderer setup. Panics are not caught; GPUI's `gpui_platform::application()` is not
 itself a fallible capability probe. The library does not open a second event
 loop or automatically migrate an already-running UI after a driver failure.
 
