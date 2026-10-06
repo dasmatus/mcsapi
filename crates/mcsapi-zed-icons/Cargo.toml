@@ -24,6 +24,11 @@ strum = { version = "0.28", features = ["derive"] }
 [lints.rust]
 unexpected_cfgs = { level = "allow" }
 
+# Zed's doc comments link items these copies leave out and carry bare URLs;
+# Zed does not check its docs with rustdoc's lints, so neither do the copies.
+[lints.rustdoc]
+all = "allow"
+
 [lints.clippy]
 dbg_macro = "deny"
 todo = "deny"

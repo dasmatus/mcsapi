@@ -26,9 +26,11 @@
 //! Buttons, toggles, badges, checkboxes, switches, alerts, separators,
 //! labels, progress bars and tooltips are drawn by Zed's `ui` components
 //! (vendored as `mcsapi-zed-ui`), whose Zed theme is built from the same
-//! tokens: [`Tokens::install`] installs both, and [`install_theme`] also
+//! tokens: `Tokens::install` installs both, and `install_theme` also
 //! passes on a full theme's fonts. Zed's components draw icons from
-//! `icons/*.svg`; create the application with [`Assets`] so they render.
+//! `icons/*.svg`; create the application with `Assets` so they render.
+//! (Not links: these exist only with the `gpui` feature, and the crate docs
+//! are also built without it.)
 //!
 //! Interactive components hold no state of their own: they take the current
 //! value and report changes through an `on_*` callback, so the owning view
