@@ -128,9 +128,15 @@ jobs:
         run: >-
           cargo test --locked --workspace --all-targets --features mcsapi-compositor/kms
           ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
+      # `--doc` runs a library's doc examples even when its manifest sets
+      # `doctest = false`, so the packages that opt out (the vendored Zed
+      # crates, whose examples name crates they do not depend on) are read
+      # from cargo metadata and excluded.
       - name: Doc tests
         run: >-
           cargo test --locked --workspace --doc
+          $(cargo metadata --locked --no-deps --format-version 1
+          | jq -r '.packages[] | select(all(.targets[]; .doctest | not)) | "--exclude \(.name)"')
           ${{ matrix.features == 'gpui' && '--features mcsapi/gpui,mcsapi-components-gpui/gpui,mcsapi-gallery/gpui' || '' }}
       - name: Run headless example
         if: matrix.features == 'default'
