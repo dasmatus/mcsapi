@@ -37,6 +37,8 @@
               ./Cargo.toml
               ./Cargo.lock
               (lib.fileset.fileFilter (f: f.hasExt "rs" || f.name == "Cargo.toml") ./crates)
+              # mcsapi-zed-icons' build.rs embeds these SVGs.
+              ./crates/mcsapi-zed-icons/icons
             ];
           };
 

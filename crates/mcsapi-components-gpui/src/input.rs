@@ -9,8 +9,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    point, prelude::*, px, relative, size,
+    SharedString, Style, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
+    fill, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -278,7 +278,7 @@ impl TextInput {
         if self.disabled {
             return;
         }
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         self.is_selecting = true;
         let index = self.index_for_mouse_position(event.position);
         if event.modifiers.shift {
@@ -466,7 +466,7 @@ impl TextInput {
     /// text, unless it is disabled.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.disabled {
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
             cx.notify();
         }
     }
@@ -802,7 +802,8 @@ impl Element for TextElement {
         let line_height = window.line_height();
         for (row, (_, line)) in prepaint.lines.iter().enumerate() {
             let origin = point(bounds.left(), bounds.top() + line_height * row as f32);
-            line.paint(origin, line_height, window, cx).ok();
+            line.paint(origin, line_height, TextAlign::Left, None, window, cx)
+                .ok();
         }
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()

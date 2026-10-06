@@ -3,9 +3,9 @@
 use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    AnchoredPositionMode, AnyElement, App, Context, Corner, Div, ElementId, FontWeight, Global,
-    Hsla, IntoElement, KeyDownEvent, ParentElement, Render, RenderOnce, SharedString, Stateful,
-    Styled, Window, anchored, canvas, deferred, div, point, prelude::*, px,
+    Anchor, AnchoredPositionMode, AnyElement, App, Div, ElementId, FontWeight, Global, Hsla,
+    IntoElement, KeyDownEvent, ParentElement, RenderOnce, SharedString, Stateful, Styled, Window,
+    anchored, canvas, deferred, div, point, prelude::*, px,
 };
 
 use crate::{Button, ButtonVariant, Handler, Tokens};
@@ -308,23 +308,7 @@ impl RenderOnce for AlertDialog {
     }
 }
 
-struct TooltipView(SharedString);
-
-impl Render for TooltipView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = Tokens::get(cx);
-        div()
-            .px(px(12.0))
-            .py(px(6.0))
-            .rounded(t.radius)
-            .bg(t.primary)
-            .text_size(px(12.0))
-            .text_color(t.primary_foreground)
-            .child(self.0.clone())
-    }
-}
-
-/// Wraps `child` so a shadcn-styled tooltip with `text` shows while it is
+/// Wraps `child` so Zed's [`ui::Tooltip`] with `text` shows while it is
 /// hovered. `id` must be unique among its siblings.
 pub fn tooltip(
     id: impl Into<ElementId>,
@@ -332,11 +316,10 @@ pub fn tooltip(
     child: impl IntoElement,
 ) -> Stateful<Div> {
     let text = text.into();
-    div()
-        .id(id)
-        .flex_none()
-        .child(child)
-        .tooltip(move |_, cx| cx.new(|_| TooltipView(text.clone())).into())
+    div().id(id).flex_none().child(child).tooltip(move |_, cx| {
+        crate::tokens::ensure_installed(cx);
+        ui::Tooltip::simple(text.clone(), cx)
+    })
 }
 
 /// One queued toast.
@@ -386,7 +369,7 @@ pub fn toast(cx: &mut App, title: impl Into<SharedString>, description: Option<S
     let timer = cx.background_executor().timer(duration);
     cx.spawn(async move |cx| {
         timer.await;
-        cx.update(|cx| dismiss(cx, id)).ok();
+        cx.update(|cx| dismiss(cx, id));
     })
     .detach();
 }
@@ -415,7 +398,7 @@ impl RenderOnce for Toaster {
         deferred(
             anchored()
                 .position_mode(AnchoredPositionMode::Window)
-                .anchor(Corner::BottomRight)
+                .anchor(Anchor::BottomRight)
                 .position(point(viewport.width - px(16.0), viewport.height - px(16.0)))
                 .child(
                     div()

@@ -21,10 +21,36 @@ mcsapi-hardened-malloc = { path = "crates/mcsapi-hardened-malloc", version = "0.
 egui = "0.36.2"
 serde_json = "1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
-gpui = { version = "0.2.2", default-features = false, features = ["wayland"] }
-# GPUI 0.2.2 pulls xattr 0.2.3, which needs libc's removed Linux ENOATTR alias.
-libc = "=0.2.189"
+# Zed's in-tree GPUI as carried by Sonne, not the crates.io release: Zed's
+# `ui` components (vendored as mcsapi-zed-ui) are written against it. GPUI no
+# longer contains a platform; `gpui_platform` picks Wayland or X11 at run time.
+gpui = { git = "https://github.com/dasmatus/sonne", rev = "b0f67b3b07b28f88151e6f88044ada8d7c4ffb75", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { git = "https://github.com/dasmatus/sonne", rev = "b0f67b3b07b28f88151e6f88044ada8d7c4ffb75", features = ["font-kit", "wayland", "x11"] }
+# Sonne crates the vendored Zed components use alongside GPUI, at GPUI's
+# revision so they share its types.
+collections = { git = "https://github.com/dasmatus/sonne", rev = "b0f67b3b07b28f88151e6f88044ada8d7c4ffb75" }
+gpui_macros = { git = "https://github.com/dasmatus/sonne", rev = "b0f67b3b07b28f88151e6f88044ada8d7c4ffb75" }
+gpui_util = { git = "https://github.com/dasmatus/sonne", rev = "b0f67b3b07b28f88151e6f88044ada8d7c4ffb75" }
+refineable = { git = "https://github.com/dasmatus/sonne", rev = "b0f67b3b07b28f88151e6f88044ada8d7c4ffb75" }
+syntax_theme = { git = "https://github.com/dasmatus/sonne", rev = "b0f67b3b07b28f88151e6f88044ada8d7c4ffb75" }
+# Zed's component stack, copied from Sonne. Each keeps Zed's library name
+# (`ui`, `theme`, ...) so the copied sources compile unchanged.
+mcsapi-zed-component = { path = "crates/mcsapi-zed-component", version = "0.1.0" }
+mcsapi-zed-icons = { path = "crates/mcsapi-zed-icons", version = "0.1.0" }
+mcsapi-zed-menu = { path = "crates/mcsapi-zed-menu", version = "0.1.0" }
+mcsapi-zed-theme = { path = "crates/mcsapi-zed-theme", version = "0.1.0" }
+mcsapi-zed-ui = { path = "crates/mcsapi-zed-ui", version = "0.1.0" }
+mcsapi-zed-ui-macros = { path = "crates/mcsapi-zed-ui-macros", version = "0.1.0" }
+libc = "0.2"
 smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend"] }
+
+# Zed patches these for GPUI, and a git dependency's own [patch] section does
+# not apply to the workspace that depends on it, so every workspace that builds
+# Sonne's GPUI repeats them: GPUI's executor needs the async-task fork's
+# metadata API, and its Linux event loop needs the calloop fork.
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "3759371fee14c40066d64777e2a36b6ffcc22590" }
 
 
 # One codegen unit and fat LTO across every crate: release builds are the ones

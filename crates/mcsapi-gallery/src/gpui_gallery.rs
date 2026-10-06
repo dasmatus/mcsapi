@@ -5,9 +5,9 @@
 //! version. The crate's tests fail while a specimen has no renderer.
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Div, Entity, FontWeight, IntoElement,
-    ParentElement, Render, SharedString, Styled, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Div, Entity, FontWeight, IntoElement, ParentElement, Render,
+    SharedString, Styled, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*,
+    px, size,
 };
 use mcsapi::{Desktop, WindowId, WorkspaceId, widgets::gpui_workspace_bar};
 use mcsapi_components_gpui::{
@@ -74,24 +74,26 @@ pub struct Options {
 
 /// Opens the gallery in a GPUI window and runs until it closes.
 pub fn run(options: Options) {
-    Application::new().run(move |cx: &mut App| {
-        mcsapi_components_gpui::bind_text_input_keys(cx);
-        let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("mcsapi widget gallery".into()),
+    gpui_platform::application()
+        .with_assets(mcsapi_components_gpui::Assets::new())
+        .run(move |cx: &mut App| {
+            mcsapi_components_gpui::bind_text_input_keys(cx);
+            let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("mcsapi widget gallery".into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| GalleryView::new(&options, window, cx)),
-        )
-        .expect("the gallery window opens");
-        cx.on_window_closed(|cx| cx.quit()).detach();
-        cx.activate(true);
-    });
+                },
+                |window, cx| cx.new(|cx| GalleryView::new(&options, window, cx)),
+            )
+            .expect("the gallery window opens");
+            cx.on_window_closed(|cx, _| cx.quit()).detach();
+            cx.activate(true);
+        });
 }
 
 /// The gallery's root view.
@@ -1586,6 +1588,14 @@ mod tests {
         "TextInput",
         "bind_text_input_keys",
         "Handler",
+        // The gallery's application serves its icons from `Assets`, and
+        // `install_theme` is `Tokens::install` with fonts. `ui` and `theme`
+        // re-export Zed's crates, whose components the specimens draw
+        // through the wrappers above.
+        "Assets",
+        "install_theme",
+        "ui",
+        "theme",
     ];
 
     #[test]
