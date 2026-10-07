@@ -288,7 +288,8 @@ impl<'a> NativeDialog<'a> {
             .with_resizable(false)
             .with_minimize_button(false)
             .with_maximize_button(false)
-            .with_window_type(egui::X11WindowType::Dialog);
+            .with_window_type(egui::X11WindowType::Dialog)
+            .with_active(true);
         let (inner, closed) = ctx.show_viewport_immediate(viewport, builder, |ui, _| {
             let frame = Frame::new()
                 .fill(tokens.background)
@@ -311,6 +312,12 @@ impl<'a> NativeDialog<'a> {
                     inner
                 })
                 .inner;
+            // egui cannot make the window a child of the app's, so a window
+            // manager may stack it under a maximized app window: raise it
+            // on its first frame, which is the only one without a height.
+            if height.is_none() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
             let closed = ui.input_mut(|input| {
                 input.viewport().close_requested()
                     || input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
@@ -319,6 +326,8 @@ impl<'a> NativeDialog<'a> {
         });
         if closed {
             *self.open = false;
+            // The next opening measures and raises its window afresh.
+            ctx.data_mut(|data| data.remove::<f32>(height_id));
         }
         Some(inner)
     }
