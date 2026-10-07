@@ -11,3 +11,5 @@ repository.workspace = true
 # never draw (the Android translation layer's theme bridge, a portal backend)
 # all read the same theme, so it must not pull in any toolkit.
 [dependencies]
+miette.workspace = true
+thiserror.workspace = true

@@ -318,6 +318,16 @@ impl Apps for BuiltIn {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The host reports through `tracing`; without a subscriber its warnings
+    // (a client that cannot start, a failed render) would go nowhere.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .init();
     let mut runtime = Runtime::new();
     runtime.register(Manifest::new(
         AppId::new("org.mcsapi.clock").expect("valid ID"),

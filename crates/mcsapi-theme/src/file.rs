@@ -72,21 +72,15 @@ impl fmt::Display for Warning {
 }
 
 /// Why a theme file is invalid.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, miette::Diagnostic)]
+#[error("{line}: {message}")]
+#[diagnostic(code(mcsapi_theme::parse))]
 pub struct ParseError {
     /// 1-based line number.
     pub line: usize,
     /// What is wrong.
     pub message: String,
 }
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.line, self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}
 
 #[derive(Clone, Debug, PartialEq)]
 enum Value {

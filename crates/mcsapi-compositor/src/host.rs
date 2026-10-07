@@ -100,6 +100,7 @@ use crate::{
     RuntimeClient, Shell, a11y, accesskit, blur, egui, text_input::TextInputs,
 };
 use mcsapi_ui::gesture::EguiBridge;
+use tracing::{error, warn};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -551,7 +552,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
                 .display
                 .insert_client(stream, Arc::new(ClientState::default()))
             {
-                eprintln!("mcsapi-compositor: rejected client: {e}");
+                warn!(error = %e, "rejected client");
             }
         })?;
     event_loop.handle().insert_source(
@@ -663,7 +664,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
                     k.vblank(crtc);
                 }
             }
-            DrmEvent::Error(e) => eprintln!("mcsapi-compositor: DRM error: {e}"),
+            DrmEvent::Error(e) => error!(error = %e, "DRM error"),
         })?;
         handle.insert_source(sources.session, |event, _, host| {
             if let Backend::Kms(k) = &mut host.backend {
@@ -781,7 +782,7 @@ impl<S: Shell> Host<S> {
             ..XkbConfig::default()
         };
         if let Err(e) = keyboard.set_xkb_config(self, config) {
-            eprintln!("mcsapi: keymap {layout:?} {variant:?}: {e:?}");
+            warn!(?layout, ?variant, error = ?e, "cannot set keymap");
         }
     }
 
@@ -808,7 +809,7 @@ impl<S: Shell> Host<S> {
                         },
                     );
                 }
-                Err(e) => eprintln!("mcsapi-compositor: cannot launch {name}: {e}"),
+                Err(e) => warn!(%name, error = %e, "cannot launch"),
             }
             return;
         }
@@ -831,7 +832,7 @@ impl<S: Shell> Host<S> {
             .spawn();
         match spawned {
             Ok(child) => self.children.push(child),
-            Err(e) => eprintln!("mcsapi-compositor: cannot launch {name}: {e}"),
+            Err(e) => warn!(%name, error = %e, "cannot launch"),
         }
     }
 
@@ -846,10 +847,10 @@ impl<S: Shell> Host<S> {
                 if r.client.restarts_after(r.started, now) {
                     restart.push(r.client.clone());
                 } else if r.client.restart {
-                    eprintln!(
-                        "mcsapi-compositor: {:?} exited within {:?} of starting; not restarting it",
-                        r.client.argv,
-                        RuntimeClient::MIN_UPTIME
+                    warn!(
+                        argv = ?r.client.argv,
+                        within = ?RuntimeClient::MIN_UPTIME,
+                        "exited soon after starting; not restarting it"
                     );
                 }
             }
@@ -868,7 +869,7 @@ impl<S: Shell> Host<S> {
         let (ours, theirs) = match UnixStream::pair() {
             Ok(pair) => pair,
             Err(e) => {
-                eprintln!("mcsapi-compositor: cannot start {program}: {e}");
+                warn!(%program, error = %e, "cannot start");
                 return;
             }
         };
@@ -877,7 +878,7 @@ impl<S: Shell> Host<S> {
             ..ClientState::default()
         };
         if let Err(e) = self.display.insert_client(ours, Arc::new(state)) {
-            eprintln!("mcsapi-compositor: cannot start {program}: {e}");
+            warn!(%program, error = %e, "cannot start");
             return;
         }
         let fd = theirs.as_raw_fd();
@@ -908,7 +909,7 @@ impl<S: Shell> Host<S> {
                 child,
                 started: Instant::now(),
             }),
-            Err(e) => eprintln!("mcsapi-compositor: cannot start {program}: {e}"),
+            Err(e) => warn!(%program, error = %e, "cannot start"),
         }
         // The child has its copy; ours closes here.
         drop(theirs);
@@ -1537,7 +1538,7 @@ impl<S: Shell> Host<S> {
             }
             Input::Key { sym, mods } => {
                 if !self.press_key(sym, mods, time) {
-                    eprintln!("mcsapi-compositor: no key for {sym:?} in the keymap");
+                    warn!(?sym, "no key for this keysym in the keymap");
                 }
             }
             // A focused field that asked for text input gets the text as
@@ -2309,7 +2310,7 @@ impl<S: Shell> Host<S> {
         let capture = match drawn {
             Ok(capture) => capture.map(Ok),
             Err(e) => {
-                eprintln!("mcsapi-compositor: render failed: {e}");
+                error!(error = %e, "render failed");
                 Some(Err(e.to_string()))
             }
         };
@@ -2566,14 +2567,14 @@ impl<S: Shell> Host<S> {
                     Ok(b) => self.blurrer = Some(b),
                     Err(e) => {
                         self.blur_unavailable = true;
-                        eprintln!("mcsapi-compositor: blur unavailable: {e}");
+                        warn!(error = %e, "blur unavailable");
                     }
                 }
             }
             if let Some(blurrer) = &mut self.blurrer {
                 // SAFETY: as above, with the frame's framebuffer bound.
                 if let Err(e) = unsafe { blurrer.apply(&gl, screen_px, blurs) } {
-                    eprintln!("mcsapi-compositor: blur failed: {e}");
+                    warn!(error = %e, "blur failed");
                 }
                 reset_gl(&gl, screen_px);
             }
@@ -3055,7 +3056,7 @@ impl<S: Shell + 'static> SelectionHandler for Host<S> {
                     let _ = write_selection(fd, text.as_bytes(), SELECTION_WRITE_TIMEOUT);
                 })
             {
-                eprintln!("mcsapi-compositor: cannot start clipboard transfer: {error}");
+                warn!(%error, "cannot start clipboard transfer");
             }
         }
     }

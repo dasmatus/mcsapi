@@ -93,34 +93,30 @@ impl fmt::Display for InstanceId {
 }
 
 /// An invalid runtime operation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum Error {
     /// An app with this identifier is already registered.
+    #[error("app already registered: {0}")]
+    #[diagnostic(code(mcsapi_runtime::duplicate_app))]
     DuplicateApp(AppId),
     /// No app with this identifier is registered.
+    #[error("unknown app: {0}")]
+    #[diagnostic(code(mcsapi_runtime::unknown_app))]
     UnknownApp(AppId),
     /// The app still has running instances.
+    #[error("app still running: {0}")]
+    #[diagnostic(code(mcsapi_runtime::app_running))]
     AppRunning(AppId),
     /// No running instance has this identity.
+    #[error("unknown instance: {0}")]
+    #[diagnostic(code(mcsapi_runtime::unknown_instance))]
     UnknownInstance(InstanceId),
     /// Instance identities are exhausted.
+    #[error("instance identities exhausted")]
+    #[diagnostic(code(mcsapi_runtime::instances_exhausted))]
     InstancesExhausted,
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DuplicateApp(id) => write!(f, "app already registered: {id}"),
-            Self::UnknownApp(id) => write!(f, "unknown app: {id}"),
-            Self::AppRunning(id) => write!(f, "app still running: {id}"),
-            Self::UnknownInstance(id) => write!(f, "unknown instance: {id}"),
-            Self::InstancesExhausted => f.write_str("instance identities exhausted"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// Registered apps and their running instances.
 ///

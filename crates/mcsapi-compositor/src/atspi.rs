@@ -5,6 +5,7 @@
 use accesskit::{ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate};
 use accesskit_unix::Adapter;
 use smithay::reexports::calloop::channel::Sender;
+use tracing::error;
 
 /// The AT-SPI adapter. It talks D-Bus on its own thread and stays idle
 /// until a client (a screen reader, accerciser) asks for the tree.
@@ -43,7 +44,7 @@ impl Bridge {
 fn survived(f: impl FnOnce()) -> bool {
     let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok();
     if !ok {
-        eprintln!("mcsapi-compositor: AT-SPI adapter failed; screen readers are off until restart");
+        error!("AT-SPI adapter failed; screen readers are off until restart");
     }
     ok
 }
