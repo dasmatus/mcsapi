@@ -275,7 +275,12 @@ impl<'a> NativeDialog<'a> {
                 ui.painter().rect_filled(rect, 0.0, tokens.overlay);
                 response
             });
-        if backdrop.inner.clicked() {
+        // egui cannot make the window a child of the app's, so the window
+        // manager may stack it under the app's window, which also maps after
+        // the dialog when the app opens with an error. Hand focus on whenever
+        // the app's window takes it, as a modal child window does.
+        let parent_focused = ctx.input(|input| input.viewport().focused == Some(true));
+        if backdrop.inner.clicked() || parent_focused {
             ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
         }
         // The height the content took last frame, so the window fits it.
@@ -312,12 +317,6 @@ impl<'a> NativeDialog<'a> {
                     inner
                 })
                 .inner;
-            // egui cannot make the window a child of the app's, so a window
-            // manager may stack it under a maximized app window: raise it
-            // on its first frame, which is the only one without a height.
-            if height.is_none() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
             let closed = ui.input_mut(|input| {
                 input.viewport().close_requested()
                     || input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
@@ -326,7 +325,7 @@ impl<'a> NativeDialog<'a> {
         });
         if closed {
             *self.open = false;
-            // The next opening measures and raises its window afresh.
+            // The next opening measures its window afresh.
             ctx.data_mut(|data| data.remove::<f32>(height_id));
         }
         Some(inner)
