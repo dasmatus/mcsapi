@@ -13,8 +13,10 @@
 //!   `settings.ini`, cursor variables, Android resources for the Android
 //!   translation layer, and JSON for anything else.
 //!
-//! This crate has no dependencies, so a process that never draws (a portal
-//! backend, a theme bridge) can read themes without linking a toolkit.
+//! This crate depends only on the derives behind its error types
+//! (`thiserror`, and `miette` without its terminal renderer), so a process
+//! that never draws (a portal backend, a theme bridge) can read themes
+//! without linking a toolkit.
 //!
 //! Themes are plain text files, a small subset of TOML (see [`mod@file`]), and can
 //! inherit from another theme so a variant only lists what it changes:
@@ -45,10 +47,7 @@ mod color;
 pub mod export;
 pub mod file;
 
-use std::{
-    fmt,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 pub use color::{Color, ParseColorError};
 pub use file::{ParseError, Parsed, Warning};
@@ -383,30 +382,25 @@ pub struct Library {
 }
 
 /// Why a theme could not be loaded.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum LoadError {
     /// No directory has the theme and it is not built in.
+    #[error("no theme named {0}")]
+    #[diagnostic(code(mcsapi_theme::not_found))]
     NotFound(String),
     /// The theme file exists but could not be read.
-    Io(PathBuf, std::io::Error),
+    #[error("{path}: {1}", path = .0.display())]
+    #[diagnostic(code(mcsapi_theme::io))]
+    Io(PathBuf, #[source] std::io::Error),
     /// The theme file is not a valid theme.
-    Parse(PathBuf, ParseError),
+    #[error("{path}:{1}", path = .0.display())]
+    #[diagnostic(code(mcsapi_theme::parse))]
+    Parse(PathBuf, #[source] ParseError),
     /// Themes inherit from each other in a loop.
+    #[error("theme {0} inherits from itself")]
+    #[diagnostic(code(mcsapi_theme::cycle))]
     Cycle(String),
 }
-
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound(id) => write!(f, "no theme named {id}"),
-            Self::Io(path, error) => write!(f, "{}: {error}", path.display()),
-            Self::Parse(path, error) => write!(f, "{}:{error}", path.display()),
-            Self::Cycle(id) => write!(f, "theme {id} inherits from itself"),
-        }
-    }
-}
-
-impl std::error::Error for LoadError {}
 
 /// How deep `inherits` may chain before it is treated as a loop.
 const MAX_INHERITANCE: usize = 16;

@@ -42,6 +42,14 @@ mcsapi-zed-theme = { path = "crates/mcsapi-zed-theme", version = "0.1.0" }
 mcsapi-zed-ui = { path = "crates/mcsapi-zed-ui", version = "0.1.0" }
 mcsapi-zed-ui-macros = { path = "crates/mcsapi-zed-ui-macros", version = "0.1.0" }
 libc = "0.2"
+# Libraries emit `tracing` events and leave where they go to the binary that
+# links them; binaries install a `tracing-subscriber` writing to stderr.
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+# Errors are `thiserror` types that also derive `miette::Diagnostic`. Without
+# `fancy` here, so a library pulls in no terminal rendering; binaries turn it on.
+miette = "7.6.0"
+thiserror = "2"
 smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend"] }
 
 # Zed patches these for GPUI, and a git dependency's own [patch] section does

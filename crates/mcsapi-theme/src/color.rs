@@ -130,16 +130,10 @@ impl fmt::Display for Color {
 }
 
 /// Why a color could not be parsed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error, miette::Diagnostic)]
+#[error("expected a color like #rrggbb, #rrggbbaa or #rgb")]
+#[diagnostic(code(mcsapi_theme::color))]
 pub struct ParseColorError;
-
-impl fmt::Display for ParseColorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("expected a color like #rrggbb, #rrggbbaa or #rgb")
-    }
-}
-
-impl std::error::Error for ParseColorError {}
 
 impl FromStr for Color {
     type Err = ParseColorError;

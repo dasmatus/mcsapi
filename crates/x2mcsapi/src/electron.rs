@@ -18,6 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tracing::warn;
 use tungstenite::Message;
 
 /// How long to wait for the app to print its DevTools address.
@@ -42,7 +43,7 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 ///
 /// The app's standard output and error are captured to find the DevTools
 /// address and forwarded to this process's. Injection runs on a background
-/// thread; failures there are reported on standard error and leave the app
+/// thread; failures there are logged as `tracing` warnings and leave the app
 /// running unstyled.
 pub fn spawn(mut command: Command, script: String) -> io::Result<Child> {
     let mut child = command
@@ -57,13 +58,11 @@ pub fn spawn(mut command: Command, script: String) -> io::Result<Child> {
     thread::spawn(move || forward(stderr, io::stderr(), address_tx));
     thread::spawn(move || {
         let Ok(address) = address_rx.recv_timeout(STARTUP_TIMEOUT) else {
-            eprintln!(
-                "x2mcsapi: the app did not report a DevTools address; content stays unstyled"
-            );
+            warn!("the app did not report a DevTools address; content stays unstyled");
             return;
         };
         if let Err(error) = inject(&address, &script) {
-            eprintln!("x2mcsapi: injecting into {address}: {error}");
+            warn!(%address, %error, "cannot inject the theme; content stays unstyled");
         }
     });
     Ok(child)

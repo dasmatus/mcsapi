@@ -37,6 +37,7 @@ use smithay::{
     },
     utils::{DeviceFd, Physical, Size},
 };
+use tracing::{error, warn};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -152,10 +153,10 @@ impl Kms {
     pub(crate) fn resume(&mut self) {
         self.active = true;
         if let Err(e) = self.drm.activate(false) {
-            eprintln!("mcsapi-compositor: cannot take the display back: {e}");
+            error!(error = %e, "cannot take the display back");
         }
         if self.libinput.resume().is_err() {
-            eprintln!("mcsapi-compositor: cannot take the input devices back");
+            error!("cannot take the input devices back");
         }
         // Buffers queued before the switch never flipped; start clean.
         self.surface.reset_buffers();
@@ -168,7 +169,7 @@ impl Kms {
             return;
         }
         if let Err(e) = self.surface.frame_submitted() {
-            eprintln!("mcsapi-compositor: page flip failed: {e}");
+            warn!(error = %e, "page flip failed");
         }
         self.frame_pending = false;
     }
@@ -176,7 +177,7 @@ impl Kms {
     /// Ctrl+Alt+F1–F12.
     pub(crate) fn change_vt(&mut self, vt: i32) {
         if let Err(e) = self.session.change_vt(vt) {
-            eprintln!("mcsapi-compositor: cannot switch to VT {vt}: {e}");
+            warn!(vt, error = %e, "cannot switch VT");
         }
     }
 }

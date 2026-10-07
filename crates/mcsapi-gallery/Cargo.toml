@@ -16,11 +16,24 @@ mcsapi-ui.workspace = true
 gpui = { workspace = true, optional = true }
 gpui_platform = { workspace = true, optional = true }
 mcsapi-components-gpui = { workspace = true, optional = true }
+# Only the binary reports errors and installs a subscriber, and it requires
+# `gpui`, so the library alone builds without them.
+miette = { workspace = true, features = ["fancy"], optional = true }
+thiserror = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [features]
 # The gallery window, drawn with GPUI. Off by default so CI and library users
 # do not build GPUI and its Wayland and Vulkan system libraries.
-gpui = ["dep:gpui", "dep:gpui_platform", "mcsapi/gpui", "mcsapi-components-gpui/gpui"]
+gpui = [
+    "dep:gpui",
+    "dep:gpui_platform",
+    "dep:miette",
+    "dep:thiserror",
+    "dep:tracing-subscriber",
+    "mcsapi/gpui",
+    "mcsapi-components-gpui/gpui",
+]
 
 [[bin]]
 name = "mcsapi-gallery"
