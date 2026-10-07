@@ -10,6 +10,10 @@ repository.workspace = true
 [dependencies]
 egui.workspace = true
 mcsapi.workspace = true
+miette.workspace = true
+
+[dev-dependencies]
+thiserror.workspace = true
 
 [features]
 gpui = ["mcsapi/gpui"]

@@ -1,7 +1,7 @@
 use egui::{RichText, Ui};
 use mcsapi_components::{
-    Alert, AlertVariant, AspectRatio, Avatar, Button, ButtonVariant, Card, Empty, Progress,
-    Separator, Skeleton, Spinner, Tokens, blockquote, typography,
+    Alert, AlertVariant, AspectRatio, Avatar, Button, ButtonVariant, Card, Empty, ErrorAlert,
+    Progress, Separator, Skeleton, Spinner, Tokens, blockquote, typography,
 };
 
 use super::{column, row};
@@ -23,6 +23,14 @@ pub(super) const SPECIMENS: &[Specimen] = &[
         summary: "A callout for information or an error.",
         api: &["Alert", "AlertVariant"],
         show: alert,
+    },
+    Specimen {
+        name: "Error Alert",
+        category: Category::Display,
+        source: "mcsapi",
+        summary: "An error the app reports, with its causes, help and a link into the documentation.",
+        api: &["ErrorAlert", "ErrorAlertResponse"],
+        show: error_alert,
     },
     Specimen {
         name: "Avatar",
@@ -133,6 +141,25 @@ fn alert(ui: &mut Ui, _: &mut super::State) {
     row(ui, "Title only", |ui| {
         column(ui, 480.0, |ui| {
             ui.add(Alert::new("Saved."));
+        });
+    });
+}
+
+fn error_alert(ui: &mut Ui, _: &mut super::State) {
+    let docs = crate::sample_docs();
+    row(ui, "Full report", |ui| {
+        column(ui, 480.0, |ui| {
+            ErrorAlert::new(&crate::sample_error())
+                .docs(&docs)
+                .dismissible(true)
+                .show(ui);
+        });
+    });
+    row(ui, "Message only", |ui| {
+        column(ui, 480.0, |ui| {
+            ErrorAlert::new(&mcsapi_ui::Error::msg("Not saved: no config directory"))
+                .docs(&docs)
+                .show(ui);
         });
     });
 }

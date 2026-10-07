@@ -35,6 +35,22 @@ use mcsapi_ui::{App, Theme};
 
 pub use specimens::State;
 
+/// The error the Error Alert specimens show: a diagnostic with a code, help
+/// and a documentation section, under the sentence an app would put first.
+pub(crate) fn sample_error() -> mcsapi_ui::Error {
+    let diagnostic = mcsapi_ui::error::miette::MietteDiagnostic::new("no theme named pastel")
+        .with_code("mcsapi_theme::not_found")
+        .with_help("Pick one of the themes Settings lists, or install pastel.toml.")
+        .with_url("docs:icon-theme");
+    mcsapi_ui::Error::new(diagnostic).context("Could not apply the theme")
+}
+
+/// Where the specimens' "Learn more" goes: the documentation the desktop
+/// names, so the button shows only on a desktop that has some.
+pub(crate) fn sample_docs() -> mcsapi_ui::Docs {
+    mcsapi_ui::Docs::from_env()
+}
+
 /// The group a [`Specimen`] is listed under.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]

@@ -65,6 +65,12 @@ are reimplementations in Rust and egui, not copies of the React source.
 | Tooltip | `tooltip` | Pending: Aceternity Animated Tooltip |
 | Typography | `typography::*`, `blockquote` | |
 
+## mcsapi's own
+
+| Component | Rust API | What it is |
+| --- | --- | --- |
+| Error alert | `ErrorAlert` | An `mcsapi_ui::Error` (a miette report) as a destructive alert: message, causes, help, code, and "Learn more" into the documentation section the error names, offline copy first (`mcsapi_ui::error`). |
+
 ## Not ported yet (shadcn/ui)
 
 Calendar, Date Picker, Carousel, Chart, Combobox, Command, Context Menu, Data

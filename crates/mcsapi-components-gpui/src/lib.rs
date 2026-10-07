@@ -65,8 +65,8 @@ pub use actions::{
 pub use assets::Assets;
 #[cfg(feature = "gpui")]
 pub use display::{
-    Alert, AlertVariant, AspectRatio, Avatar, Card, Empty, Label, Progress, Separator, Skeleton,
-    Spinner, blockquote, typography,
+    Alert, AlertVariant, AspectRatio, Avatar, Card, Empty, ErrorAlert, Label, Progress, Separator,
+    Skeleton, Spinner, blockquote, typography,
 };
 #[cfg(feature = "gpui")]
 pub use forms::{Checkbox, Input, RadioGroup, Select, Slider, Switch, Textarea};
