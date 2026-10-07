@@ -300,3 +300,37 @@ fn an_error_dialog_shows_until_escape_takes_the_error() {
         assert!(!shown.closed, "nothing shows without an error");
     });
 }
+
+#[test]
+fn a_native_dialog_row_answers_enter_and_escape() {
+    use mcsapi_ui::dialog::{ActionRole, DialogAction};
+    let actions = [
+        DialogAction::new("Cancel", ActionRole::Cancel),
+        DialogAction::new("Share", ActionRole::Default),
+    ];
+    let key = |key| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    };
+    let ctx = egui::Context::default();
+    let mut open = true;
+    let mut answer = |time, events| {
+        let mut answer = None;
+        frame(&ctx, time, events, |ui| {
+            answer = NativeDialog::new("share", &mut open, "Share the screen?")
+                .show(ui.ctx(), |ui| NativeDialog::actions(ui, &actions))
+                .flatten();
+        });
+        answer
+    };
+    assert_eq!(answer(0.0, vec![]), None, "no answer without input");
+    assert_eq!(answer(0.1, vec![key(egui::Key::Enter)]), Some(1));
+    assert_eq!(answer(0.2, vec![key(egui::Key::Escape)]), Some(0));
+    assert!(
+        open,
+        "the row answers Escape, so the dialog leaves closing to the app"
+    );
+}

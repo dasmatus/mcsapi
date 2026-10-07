@@ -19,6 +19,7 @@ use mcsapi_components_gpui::{
     toasts, tooltip, typography,
 };
 use mcsapi_ui::Theme;
+use mcsapi_ui::dialog::{ActionRole, DialogAction};
 
 use crate::{Category, PRESETS, Specimen, find, specimens};
 
@@ -1543,11 +1544,14 @@ impl Render for SampleDialog {
                 "The window system keeps it over the gallery until it closes.",
             ))
             .child(
-                div().flex().justify_end().mt(px(8.0)).child(
-                    Button::new("Close")
-                        .id("sample-dialog-close")
-                        .on_click(|_, window, _| window.remove_window()),
-                ),
+                NativeDialog::actions(
+                    &[
+                        DialogAction::new("Cancel", ActionRole::Cancel),
+                        DialogAction::new("Close", ActionRole::Default),
+                    ],
+                    |_, window, _| window.remove_window(),
+                )
+                .mt(px(8.0)),
             );
         let focus = self.focus.clone();
         NativeDialog::frame(window, cx, &focus, content, |window, _| {

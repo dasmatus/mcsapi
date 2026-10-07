@@ -3,6 +3,8 @@
 
 use egui::{Align2, Context, Frame, Id, Margin, Modal, Order, Response, RichText, Ui, vec2};
 
+use mcsapi_ui::dialog::{ActionRole, DialogAction, ParentWindow};
+
 use crate::{Button, ButtonVariant, Tokens};
 
 pub(crate) fn dialog_frame(tokens: &Tokens) -> Frame {
@@ -208,13 +210,37 @@ impl<'a> AlertDialog<'a> {
 /// such as the mcsapi compositor drawing egui itself, the same content is a
 /// modal in the app's window, framed like [`Dialog`].
 ///
-/// The window fits its content's height; `width` sets its width.
+/// The window fits its content's height; `width` sets its width. The
+/// content is anything a `Ui` holds (a list, a checkbox row, a text field),
+/// usually ending in [`NativeDialog::actions`], the button row that also
+/// answers Enter and Escape.
+///
+/// ```
+/// # egui::__run_test_ui(|ui| {
+/// use mcsapi_components::NativeDialog;
+/// use mcsapi_ui::dialog::{ActionRole, DialogAction};
+///
+/// let mut open = true;
+/// let actions = [
+///     DialogAction::new("Cancel", ActionRole::Cancel),
+///     DialogAction::new("Take Screenshot", ActionRole::Default),
+/// ];
+/// let answer = NativeDialog::new("shot", &mut open, "Take a screenshot?")
+///     .show(ui.ctx(), |ui| {
+///         ui.label("Everything on screen will be in it.");
+///         NativeDialog::actions(ui, &actions)
+///     })
+///     .flatten();
+/// assert_eq!(answer, None);
+/// # });
+/// ```
 #[must_use = "draw it with `dialog.show(ctx, ...)`"]
 pub struct NativeDialog<'a> {
     id: Id,
     open: &'a mut bool,
     title: String,
     width: f32,
+    parent: ParentWindow,
 }
 
 impl<'a> NativeDialog<'a> {
@@ -225,6 +251,7 @@ impl<'a> NativeDialog<'a> {
             open,
             title: title.into(),
             width: 420.0,
+            parent: ParentWindow::None,
         }
     }
 
@@ -232,6 +259,57 @@ impl<'a> NativeDialog<'a> {
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
+    }
+
+    /// Names another process's window the dialog belongs to, as a portal
+    /// request does. The app's own window is its parent without this.
+    ///
+    /// Not attached yet: winit can neither import an xdg-foreign handle nor
+    /// set an X11 transient-for, so the window opens as a dialog of its own,
+    /// centered. [`NativeDialog::parent_window`] keeps it for the backend
+    /// that can.
+    pub fn parent(mut self, parent: ParentWindow) -> Self {
+        self.parent = parent;
+        self
+    }
+
+    /// The window [`NativeDialog::parent`] named.
+    pub fn parent_window(&self) -> &ParentWindow {
+        &self.parent
+    }
+
+    /// The dialog's button row, right-aligned with the first action
+    /// leftmost: [`ActionRole::Default`] as the primary button,
+    /// [`ActionRole::Cancel`] as an outline one, and the rest as ghost
+    /// buttons. Returns the index of the action chosen this frame, by a
+    /// press, by Enter (the default) or by Escape (the cancel). Closing the
+    /// window is a cancel too: `open` turns `false`.
+    pub fn actions(ui: &mut Ui, actions: &[DialogAction]) -> Option<usize> {
+        let mut chosen = None;
+        let row = vec2(ui.available_width(), 36.0);
+        let layout = egui::Layout::right_to_left(egui::Align::Center);
+        ui.allocate_ui_with_layout(row, layout, |ui| {
+            for (index, action) in actions.iter().enumerate().rev() {
+                let variant = match action.role {
+                    ActionRole::Default => ButtonVariant::Default,
+                    ActionRole::Cancel => ButtonVariant::Outline,
+                    ActionRole::Other => ButtonVariant::Ghost,
+                };
+                if ui
+                    .add(Button::new(&action.label).variant(variant))
+                    .clicked()
+                {
+                    chosen = Some(index);
+                }
+            }
+        });
+        // Read here, inside the dialog's own window, so the keys are the
+        // dialog's, and consumed so the dialog's Escape-to-close does not
+        // answer twice.
+        let key = |key| ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, key));
+        chosen
+            .or_else(|| DialogAction::default_index(actions).filter(|_| key(egui::Key::Enter)))
+            .or_else(|| DialogAction::cancel_index(actions).filter(|_| key(egui::Key::Escape)))
     }
 
     /// Whether this backend opens the dialog as a window of its own rather

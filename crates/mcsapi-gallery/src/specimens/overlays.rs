@@ -6,6 +6,7 @@ use mcsapi_components::{
 
 use super::row;
 use crate::{Category, Specimen};
+use mcsapi_ui::dialog::{ActionRole, DialogAction};
 
 pub(super) const SPECIMENS: &[Specimen] = &[
     Specimen {
@@ -122,21 +123,24 @@ fn native_dialog(ui: &mut Ui, state: &mut super::State) {
         }
     });
     let ctx = ui.ctx().clone();
-    let mut done = false;
-    NativeDialog::new("gallery-window", &mut state.window_open, "Rename").show(&ctx, |ui| {
-        ui.label(typography::large(&tokens, "Rename the file"));
-        ui.add(Label::new("Name"));
-        ui.add(Input::new(&mut state.name).width(ui.available_width()));
-        ui.add_space(8.0);
-        let row = egui::vec2(ui.available_width(), 36.0);
-        let layout = egui::Layout::right_to_left(egui::Align::Center);
-        ui.allocate_ui_with_layout(row, layout, |ui| {
-            done = ui.add(Button::new("Rename")).clicked();
-        });
-    });
-    if done {
+    let actions = [
+        DialogAction::new("Cancel", ActionRole::Cancel),
+        DialogAction::new("Rename", ActionRole::Default),
+    ];
+    let answer = NativeDialog::new("gallery-window", &mut state.window_open, "Rename")
+        .show(&ctx, |ui| {
+            ui.label(typography::large(&tokens, "Rename the file"));
+            ui.add(Label::new("Name"));
+            ui.add(Input::new(&mut state.name).width(ui.available_width()));
+            ui.add_space(8.0);
+            NativeDialog::actions(ui, &actions)
+        })
+        .flatten();
+    if let Some(index) = answer {
         state.window_open = false;
-        toast(&ctx, "Renamed", Some(state.name.clone()));
+        if actions[index].role == ActionRole::Default {
+            toast(&ctx, "Renamed", Some(state.name.clone()));
+        }
     }
 }
 

@@ -9,6 +9,8 @@ use gpui::{
     anchored, canvas, deferred, div, point, prelude::*, px,
 };
 
+use mcsapi_ui::dialog::{ActionRole, DialogAction, ParentWindow};
+
 use crate::{Button, ButtonVariant, Handler, Tokens};
 
 /// A callback that needs no argument, such as closing a dialog.
@@ -325,6 +327,7 @@ impl RenderOnce for AlertDialog {
 pub struct NativeDialog {
     title: SharedString,
     width: f32,
+    parent: ParentWindow,
 }
 
 impl NativeDialog {
@@ -336,6 +339,7 @@ impl NativeDialog {
         Self {
             title: title.into(),
             width: 420.0,
+            parent: ParentWindow::None,
         }
     }
 
@@ -343,6 +347,70 @@ impl NativeDialog {
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
+    }
+
+    /// Names another process's window the dialog belongs to, as a portal
+    /// request's `parent_window` does. Without it the parent is this app's
+    /// active window, or none, and the dialog stands alone.
+    ///
+    /// Not attached yet: GPUI parents a dialog only to its own windows, and
+    /// importing an xdg-foreign handle (or setting an X11 transient-for on
+    /// another client's window) needs GPUI's Wayland and X11 backends to
+    /// learn it, and the mcsapi compositor to serve `zxdg_importer_v2`.
+    /// Until then a dialog given one opens as a standalone modal dialog,
+    /// centered, which is what the portal frontend falls back to as well.
+    pub fn parent(mut self, parent: ParentWindow) -> Self {
+        self.parent = parent;
+        self
+    }
+
+    /// The window [`NativeDialog::parent`] named.
+    pub fn parent_window(&self) -> &ParentWindow {
+        &self.parent
+    }
+
+    /// The dialog's button row, right-aligned in reading order:
+    /// [`ActionRole::Default`] as the primary button, [`ActionRole::Cancel`]
+    /// as an outline one, and the rest as ghost buttons. `on_action` gets
+    /// the index of the action pressed, or of the default when Enter is
+    /// pressed. Escape is [`NativeDialog::frame`]'s, so pass the cancel to
+    /// its `on_escape`.
+    pub fn actions(
+        actions: &[DialogAction],
+        on_action: impl Fn(&usize, &mut Window, &mut App) + 'static,
+    ) -> Div {
+        let on_action: Handler<usize> = Rc::new(on_action);
+        let mut row = div().flex().justify_end().gap(px(8.0));
+        for (index, action) in actions.iter().enumerate() {
+            let variant = match action.role {
+                ActionRole::Default => ButtonVariant::Default,
+                ActionRole::Cancel => ButtonVariant::Outline,
+                ActionRole::Other => ButtonVariant::Ghost,
+            };
+            let on_action = on_action.clone();
+            row = row.child(
+                Button::new(action.label.clone())
+                    .variant(variant)
+                    .on_click(move |_, window, cx| on_action(&index, window, cx)),
+            );
+        }
+        if let Some(default) = DialogAction::default_index(actions) {
+            row = row.child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        let on_action = on_action.clone();
+                        window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
+                            if phase.bubble() && event.keystroke.key == "enter" {
+                                on_action(&default, window, cx);
+                            }
+                        });
+                    },
+                )
+                .size_0(),
+            );
+        }
+        row
     }
 
     /// Opens the window with the view `build` makes. It starts with a guess
