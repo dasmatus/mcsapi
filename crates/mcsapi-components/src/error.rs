@@ -1,14 +1,14 @@
 //! An [`mcsapi_ui::Error`] drawn with its causes, help and a "Learn more"
 //! button into the documentation: inline as [`ErrorAlert`], or as the
-//! modal [`ErrorDialog`].
+//! [`ErrorDialog`] window.
 
 use egui::{
-    Color32, Context, FontId, Frame, Id, Margin, Modal, Response, RichText, Ui, WidgetInfo,
-    WidgetType,
+    Color32, Context, FontId, Frame, Id, Margin, Response, RichText, Ui, WidgetInfo, WidgetType,
+    vec2,
 };
 use mcsapi_ui::error::{Docs, Error};
 
-use crate::{Button, ButtonSize, ButtonVariant, Tokens};
+use crate::{Button, ButtonSize, ButtonVariant, NativeDialog, Tokens};
 
 /// An [`Error`] as an alert: the message in the destructive color (the
 /// accent for a warning), each cause under it, miette's help, the diagnostic
@@ -211,11 +211,11 @@ fn body(
     }
 }
 
-/// An [`Error`] as an alert dialog: a modal over a dimmed backdrop that
-/// says what [`ErrorAlert`] says, with "Learn more", "Copy details" and
-/// "OK". It shows while `error` holds one, and "OK" or Escape takes it, so
-/// the app's next failure opens it again; like shadcn's AlertDialog, a click
-/// on the backdrop does not dismiss it.
+/// An [`Error`] as an alert dialog: a [`NativeDialog`], so a window of its
+/// own where the backend can open one, that says what [`ErrorAlert`] says,
+/// with "Learn more", "Copy details" and "OK". It shows while `error` holds
+/// one, and "OK", Escape or the window's close button takes it, so the app's
+/// next failure opens it again; a press on the dimmed app does not.
 ///
 /// ```
 /// # egui::__run_test_ui(|ui| {
@@ -235,6 +235,7 @@ pub struct ErrorDialog<'a> {
     error: &'a mut Option<Error>,
     docs: Option<&'a Docs>,
     address_only: bool,
+    title: Option<&'a str>,
 }
 
 /// What happened to an [`ErrorDialog`] this frame.
@@ -257,6 +258,7 @@ impl<'a> ErrorDialog<'a> {
             error,
             docs: None,
             address_only: false,
+            title: None,
         }
     }
 
@@ -264,6 +266,13 @@ impl<'a> ErrorDialog<'a> {
     /// environment.
     pub fn docs(mut self, docs: &'a Docs) -> Self {
         self.docs = Some(docs);
+        self
+    }
+
+    /// Sets the window's title, such as the app's name; "Error", or
+    /// "Warning" for a warning, without one.
+    pub fn title(mut self, title: &'a str) -> Self {
+        self.title = Some(title);
         self
     }
 
@@ -297,34 +306,39 @@ impl<'a> ErrorDialog<'a> {
             .address_only
             .then(|| error.doc().and_then(|link| docs.online_url(link)))
             .flatten();
-        let mut closed = false;
+        let mut ok = false;
         let mut learn_more = None;
-        let response = Modal::new(self.id)
-            .backdrop_color(tokens.overlay)
-            .frame(crate::overlay::dialog_frame(&tokens))
-            .show(ctx, |ui| {
-                ui.set_width(420.0);
-                // The message is the dialog's title, as large as AlertDialog's.
-                let title = FontId::proportional(18.0);
-                body(ui, &tokens, error, (title, tone), address.as_deref());
-                ui.add_space(16.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    closed = ui.add(Button::new("OK")).clicked();
-                    let openable = !docs.is_empty() && !self.address_only;
-                    if let Some(link) = error.doc().filter(|_| openable) {
-                        let button = Button::new("Learn more").variant(ButtonVariant::Outline);
-                        if ui.add(button).clicked() {
-                            learn_more = Some(docs.open(link));
-                        }
+        let mut open = true;
+        let title = self.title.unwrap_or(if error.is_warning() {
+            "Warning"
+        } else {
+            "Error"
+        });
+        NativeDialog::new(self.id, &mut open, title).show(ctx, |ui| {
+            // The message is the dialog's title, as large as AlertDialog's.
+            let title = FontId::proportional(18.0);
+            body(ui, &tokens, error, (title, tone), address.as_deref());
+            ui.add_space(16.0);
+            // A row only as tall as the buttons, so a native window can fit
+            // its height to the content.
+            let row = vec2(ui.available_width(), 36.0);
+            let layout = egui::Layout::right_to_left(egui::Align::Center);
+            ui.allocate_ui_with_layout(row, layout, |ui| {
+                ok |= ui.add(Button::new("OK")).clicked();
+                let openable = !docs.is_empty() && !self.address_only;
+                if let Some(link) = error.doc().filter(|_| openable) {
+                    let button = Button::new("Learn more").variant(ButtonVariant::Outline);
+                    if ui.add(button).clicked() {
+                        learn_more = Some(docs.open(link));
                     }
-                    let copy = Button::new("Copy details").variant(ButtonVariant::Ghost);
-                    if ui.add(copy).clicked() {
-                        ui.ctx().copy_text(error.details());
-                    }
-                });
+                }
+                let copy = Button::new("Copy details").variant(ButtonVariant::Ghost);
+                if ui.add(copy).clicked() {
+                    ui.ctx().copy_text(error.details());
+                }
             });
-        closed |= response.is_top_modal
-            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        });
+        let closed = ok || !open;
         if closed {
             *self.error = None;
         }

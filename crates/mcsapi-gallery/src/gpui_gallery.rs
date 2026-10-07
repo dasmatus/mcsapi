@@ -94,7 +94,14 @@ pub fn run(options: Options) {
                 |window, cx| cx.new(|cx| GalleryView::new(&options, window, cx)),
             )
             .expect("the gallery window opens");
-            cx.on_window_closed(|cx, _| cx.quit()).detach();
+            // Quits with the gallery's window, not with a dialog window the
+            // Error Dialog specimen opened.
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
             cx.activate(true);
         });
 }
@@ -136,7 +143,6 @@ pub struct GalleryView {
     profile_name: Entity<TextInput>,
     delete_open: bool,
     publish_open: bool,
-    error_open: bool,
     answer: Option<String>,
     // Shell
     desktop: Desktop,
@@ -214,7 +220,6 @@ impl GalleryView {
             profile_name: text(cx, |input| input.with_text("Pedro Duarte")),
             delete_open: false,
             publish_open: false,
-            error_open: false,
             answer: None,
             desktop: sample_desktop(4),
         };
@@ -1520,26 +1525,25 @@ fn alert_dialog(
 }
 
 fn error_dialog(
-    view: &mut GalleryView,
+    _: &mut GalleryView,
     t: &Tokens,
     _: &mut Window,
-    cx: &mut Context<GalleryView>,
+    _: &mut Context<GalleryView>,
 ) -> Div {
-    let mut controls = vec![any(Button::new("Apply theme")
-        .variant(ButtonVariant::Outline)
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.error_open = true;
-            cx.notify();
-        })))];
-    if view.error_open {
-        controls.push(any(ErrorDialog::new(&crate::sample_error())
-            .docs(crate::sample_docs())
-            .on_close(cx.listener(|this, _, _, cx| {
-                this.error_open = false;
-                cx.notify();
-            }))));
-    }
-    rows([row(t, "Full report", controls)])
+    rows([row(
+        t,
+        "Full report",
+        [any(Button::new("Apply theme")
+            .variant(ButtonVariant::Outline)
+            .on_click(|_, _, cx| {
+                let dialog = ErrorDialog::new(&crate::sample_error())
+                    .docs(crate::sample_docs())
+                    .title("mcsapi widget gallery");
+                if let Err(error) = dialog.open(cx) {
+                    tracing::warn!(%error, "could not open the dialog window");
+                }
+            }))],
+    )])
 }
 
 fn tooltips(_: &mut GalleryView, t: &Tokens, _: &mut Window, _: &mut Context<GalleryView>) -> Div {

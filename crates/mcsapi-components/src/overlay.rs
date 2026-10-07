@@ -1,4 +1,5 @@
-//! Overlays: dialog, alert dialog, tooltip, and toasts (shadcn's Sonner).
+//! Overlays: dialog, alert dialog, native dialog window, tooltip, and
+//! toasts (shadcn's Sonner).
 
 use egui::{Align2, Context, Frame, Id, Margin, Modal, Order, Response, RichText, Ui, vec2};
 
@@ -192,6 +193,134 @@ impl<'a> AlertDialog<'a> {
             *self.open = false;
         }
         action
+    }
+}
+
+/// A dialog in a window of its own: a native child window over the app's,
+/// titled `title` by the window system, with `content` drawn on the theme's
+/// background. While it is open the app's window is dimmed and takes no
+/// input, as under [`Dialog`], so the person answers the dialog first.
+/// Escape and the window's close button set `open` to `false`.
+///
+/// It is native where the egui backend can open more windows (eframe on
+/// Wayland, X11, macOS and Windows), and there the window is a dialog to the
+/// window system: X11 gets `_NET_WM_WINDOW_TYPE_DIALOG`. Where it cannot,
+/// such as the mcsapi compositor drawing egui itself, the same content is a
+/// modal in the app's window, framed like [`Dialog`].
+///
+/// The window fits its content's height; `width` sets its width.
+#[must_use = "draw it with `dialog.show(ctx, ...)`"]
+pub struct NativeDialog<'a> {
+    id: Id,
+    open: &'a mut bool,
+    title: String,
+    width: f32,
+}
+
+impl<'a> NativeDialog<'a> {
+    /// A dialog window titled `title`, shown while `open` is true.
+    pub fn new(id_salt: impl egui::AsId, open: &'a mut bool, title: impl Into<String>) -> Self {
+        Self {
+            id: Id::new(id_salt),
+            open,
+            title: title.into(),
+            width: 420.0,
+        }
+    }
+
+    /// Sets the content width (default 420).
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Whether this backend opens the dialog as a window of its own rather
+    /// than a modal in the app's window.
+    pub fn is_native(ctx: &Context) -> bool {
+        !ctx.embed_viewports()
+    }
+
+    /// Draws the dialog with `content`. Returns `None` while closed.
+    pub fn show<R>(self, ctx: &Context, mut content: impl FnMut(&mut Ui) -> R) -> Option<R> {
+        if !*self.open {
+            return None;
+        }
+        let tokens = Tokens::current(ctx);
+        if !Self::is_native(ctx) {
+            let response = Modal::new(self.id)
+                .backdrop_color(tokens.overlay)
+                .frame(dialog_frame(&tokens))
+                .show(ctx, |ui| {
+                    ui.set_width(self.width);
+                    content(ui)
+                });
+            let escaped = response.is_top_modal
+                && ctx
+                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            if escaped {
+                *self.open = false;
+            }
+            return Some(response.inner);
+        }
+
+        let viewport = egui::ViewportId::from_hash_of(self.id);
+        // The app's window, dimmed and deaf until the dialog closes; a press
+        // on it raises the dialog instead, as a modal child window does.
+        let screen = ctx.content_rect();
+        let backdrop = egui::Area::new(self.id.with("backdrop"))
+            .order(Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter().rect_filled(rect, 0.0, tokens.overlay);
+                response
+            });
+        if backdrop.inner.clicked() {
+            ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+        }
+        // The height the content took last frame, so the window fits it.
+        let height_id = self.id.with("height");
+        let height = ctx.data(|data| data.get_temp::<f32>(height_id));
+        let margin = 24.0;
+        let builder = egui::ViewportBuilder::default()
+            .with_title(&self.title)
+            .with_inner_size([self.width + 2.0 * margin, height.unwrap_or(160.0)])
+            .with_resizable(false)
+            .with_minimize_button(false)
+            .with_maximize_button(false)
+            .with_window_type(egui::X11WindowType::Dialog);
+        let (inner, closed) = ctx.show_viewport_immediate(viewport, builder, |ui, _| {
+            let frame = Frame::new()
+                .fill(tokens.background)
+                .inner_margin(Margin::same(margin as i8));
+            let inner = egui::CentralPanel::default()
+                .frame(frame)
+                .show(ui, |ui| {
+                    ui.set_width(self.width);
+                    let inner = content(ui);
+                    let wanted = ui.min_rect().height() + 2.0 * margin;
+                    if height.is_none_or(|h| (h - wanted).abs() > 0.5) {
+                        ui.ctx()
+                            .data_mut(|data| data.insert_temp(height_id, wanted));
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(
+                                self.width + 2.0 * margin,
+                                wanted,
+                            )));
+                    }
+                    inner
+                })
+                .inner;
+            let closed = ui.input_mut(|input| {
+                input.viewport().close_requested()
+                    || input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            });
+            (inner, closed)
+        });
+        if closed {
+            *self.open = false;
+        }
+        Some(inner)
     }
 }
 

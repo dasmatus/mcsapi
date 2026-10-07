@@ -4055,6 +4055,7 @@ dependencies = [
  "mcsapi-ui",
  "miette",
  "thiserror 2.0.21",
+ "tracing",
  "tracing-subscriber",
 ]
 
