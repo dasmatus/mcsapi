@@ -266,3 +266,71 @@ fn escape_cancels_an_alert_dialog() {
     assert_eq!(answer, Some(AlertDialogAction::Cancel));
     assert!(!open);
 }
+
+#[test]
+fn an_error_dialog_shows_until_escape_takes_the_error() {
+    let ctx = egui::Context::default();
+    let docs = mcsapi_ui::Docs::new(None, None);
+    let mut error = Some(mcsapi_ui::Error::msg("Could not save"));
+    let mut closed = false;
+    let output = frame(&ctx, 0.0, vec![], |ui| {
+        closed = ErrorDialog::new("error", &mut error)
+            .docs(&docs)
+            .show(ui.ctx())
+            .closed;
+    });
+    assert!(!output.shapes.is_empty());
+    assert!(!closed && error.is_some(), "the dialog stays without input");
+    let escape = Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    };
+    frame(&ctx, 0.1, vec![escape], |ui| {
+        closed = ErrorDialog::new("error", &mut error)
+            .docs(&docs)
+            .show(ui.ctx())
+            .closed;
+    });
+    assert!(closed && error.is_none());
+    frame(&ctx, 0.2, vec![], |ui| {
+        let shown = ErrorDialog::new("error", &mut error).show(ui.ctx());
+        assert!(!shown.closed, "nothing shows without an error");
+    });
+}
+
+#[test]
+fn a_native_dialog_row_answers_enter_and_escape() {
+    use mcsapi_ui::dialog::{ActionRole, DialogAction};
+    let actions = [
+        DialogAction::new("Cancel", ActionRole::Cancel),
+        DialogAction::new("Share", ActionRole::Default),
+    ];
+    let key = |key| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    };
+    let ctx = egui::Context::default();
+    let mut open = true;
+    let mut answer = |time, events| {
+        let mut answer = None;
+        frame(&ctx, time, events, |ui| {
+            answer = NativeDialog::new("share", &mut open, "Share the screen?")
+                .show(ui.ctx(), |ui| NativeDialog::actions(ui, &actions))
+                .flatten();
+        });
+        answer
+    };
+    assert_eq!(answer(0.0, vec![]), None, "no answer without input");
+    assert_eq!(answer(0.1, vec![key(egui::Key::Enter)]), Some(1));
+    assert_eq!(answer(0.2, vec![key(egui::Key::Escape)]), Some(0));
+    assert!(
+        open,
+        "the row answers Escape, so the dialog leaves closing to the app"
+    );
+}

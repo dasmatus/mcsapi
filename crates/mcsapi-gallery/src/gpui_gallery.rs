@@ -13,11 +13,13 @@ use mcsapi::{Desktop, WindowId, WorkspaceId, widgets::gpui_workspace_bar};
 use mcsapi_components_gpui::{
     Alert, AlertDialog, AlertDialogAction, AlertVariant, AspectRatio, Avatar, Badge, BadgeVariant,
     Button, ButtonSize, ButtonVariant, Card, Checkbox, Collapsible, Dialog, Empty, ErrorAlert,
-    Input, Kbd, Label, Pagination, Progress, RadioGroup, Select, Separator, Skeleton, Slider,
-    Spinner, Switch, Table, Tabs, TextInput, Textarea, Toaster, Toggle, ToggleGroup, Tokens,
-    accordion_item, blockquote, breadcrumb, page_window, toast, toasts, tooltip, typography,
+    ErrorDialog, Input, Kbd, Label, NativeDialog, Pagination, Progress, RadioGroup, Select,
+    Separator, Skeleton, Slider, Spinner, Switch, Table, Tabs, TextInput, Textarea, Toaster,
+    Toggle, ToggleGroup, Tokens, accordion_item, blockquote, breadcrumb, page_window, toast,
+    toasts, tooltip, typography,
 };
 use mcsapi_ui::Theme;
+use mcsapi_ui::dialog::{ActionRole, DialogAction};
 
 use crate::{Category, PRESETS, Specimen, find, specimens};
 
@@ -57,6 +59,8 @@ pub(crate) const RENDERERS: &[(&str, Renderer)] = &[
     ("Table", table),
     ("Dialog", dialog),
     ("Alert Dialog", alert_dialog),
+    ("Native Dialog", native_dialog),
+    ("Error Dialog", error_dialog),
     ("Tooltip", tooltips),
     ("Toast", toast_demo),
     ("Workspace Bar", workspace_bar),
@@ -92,7 +96,14 @@ pub fn run(options: Options) {
                 |window, cx| cx.new(|cx| GalleryView::new(&options, window, cx)),
             )
             .expect("the gallery window opens");
-            cx.on_window_closed(|cx, _| cx.quit()).detach();
+            // Quits with the gallery's window, not with a dialog window the
+            // Error Dialog specimen opened.
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
             cx.activate(true);
         });
 }
@@ -1513,6 +1524,85 @@ fn alert_dialog(
         ));
     }
     rows(rows_list)
+}
+
+/// The Native Dialog specimen's window.
+struct SampleDialog {
+    focus: gpui::FocusHandle,
+}
+
+impl Render for SampleDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Tokens::get(cx);
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(typography::large(&t, "A window of its own"))
+            .child(typography::muted(
+                &t,
+                "The window system keeps it over the gallery until it closes.",
+            ))
+            .child(
+                NativeDialog::actions(
+                    &[
+                        DialogAction::new("Cancel", ActionRole::Cancel),
+                        DialogAction::new("Close", ActionRole::Default),
+                    ],
+                    |_, window, _| window.remove_window(),
+                )
+                .mt(px(8.0)),
+            );
+        let focus = self.focus.clone();
+        NativeDialog::frame(window, cx, &focus, content, |window, _| {
+            window.remove_window()
+        })
+    }
+}
+
+fn native_dialog(
+    _: &mut GalleryView,
+    t: &Tokens,
+    _: &mut Window,
+    _: &mut Context<GalleryView>,
+) -> Div {
+    rows([row(
+        t,
+        "Window",
+        [any(Button::new("Open window")
+            .variant(ButtonVariant::Outline)
+            .on_click(|_, _, cx| {
+                let opened =
+                    NativeDialog::new("mcsapi widget gallery").open(cx, |_, cx| SampleDialog {
+                        focus: cx.focus_handle(),
+                    });
+                if let Err(error) = opened {
+                    tracing::warn!(%error, "could not open the dialog window");
+                }
+            }))],
+    )])
+}
+
+fn error_dialog(
+    _: &mut GalleryView,
+    t: &Tokens,
+    _: &mut Window,
+    _: &mut Context<GalleryView>,
+) -> Div {
+    rows([row(
+        t,
+        "Full report",
+        [any(Button::new("Apply theme")
+            .variant(ButtonVariant::Outline)
+            .on_click(|_, _, cx| {
+                let dialog = ErrorDialog::new(&crate::sample_error())
+                    .docs(crate::sample_docs())
+                    .title("mcsapi widget gallery");
+                if let Err(error) = dialog.open(cx) {
+                    tracing::warn!(%error, "could not open the dialog window");
+                }
+            }))],
+    )])
 }
 
 fn tooltips(_: &mut GalleryView, t: &Tokens, _: &mut Window, _: &mut Context<GalleryView>) -> Div {

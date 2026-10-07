@@ -1,4 +1,5 @@
-//! Dialogs, tooltips, and toasts.
+//! Dialogs (drawn in the window, or [`NativeDialog`] windows of their
+//! own), tooltips, and toasts.
 
 use std::{rc::Rc, time::Duration};
 
@@ -8,10 +9,15 @@ use gpui::{
     anchored, canvas, deferred, div, point, prelude::*, px,
 };
 
+use mcsapi_ui::dialog::{ActionRole, DialogAction, ParentWindow};
+
 use crate::{Button, ButtonVariant, Handler, Tokens};
 
 /// A callback that needs no argument, such as closing a dialog.
 type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// A callback for after a window is gone, so with no window to pass.
+type AppCallback = Rc<dyn Fn(&mut App)>;
 
 /// A window-sized layer that swallows the pointer and calls `on_press` when
 /// it is pressed, for closing menus and dialogs.
@@ -305,6 +311,344 @@ impl RenderOnce for AlertDialog {
             Rc::new(move |window, cx| cancel(&AlertDialogAction::Cancel, window, cx)),
             content,
         )
+    }
+}
+
+/// A dialog in a window of its own: a native, modal child of the active
+/// window (`gpui::WindowKind::Dialog`, so `xdg_dialog_v1` on Wayland and a
+/// transient dialog on X11), titled `title` by the window system and
+/// centered on the display. The window system keeps it over its parent and
+/// the parent takes no input until it closes.
+///
+/// The view `build` makes is the window's root. Draw it with
+/// [`NativeDialog::frame`] for the theme's background, padding, focus and a
+/// window that fits its content, and close it with `window.remove_window()`.
+#[must_use = "open it with `dialog.open(cx, ...)`"]
+pub struct NativeDialog {
+    title: SharedString,
+    width: f32,
+    parent: ParentWindow,
+}
+
+impl NativeDialog {
+    /// Padding around the content, the same as [`Dialog`]'s.
+    pub const PADDING: f32 = 24.0;
+
+    /// A dialog window titled `title`.
+    pub fn new(title: impl Into<SharedString>) -> Self {
+        Self {
+            title: title.into(),
+            width: 420.0,
+            parent: ParentWindow::None,
+        }
+    }
+
+    /// Sets the content width (default 420).
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Names another process's window the dialog belongs to, as a portal
+    /// request's `parent_window` does. Without it the parent is this app's
+    /// active window, or none, and the dialog stands alone.
+    ///
+    /// Not attached yet: GPUI parents a dialog only to its own windows, and
+    /// importing an xdg-foreign handle (or setting an X11 transient-for on
+    /// another client's window) needs GPUI's Wayland and X11 backends to
+    /// learn it, and the mcsapi compositor to serve `zxdg_importer_v2`.
+    /// Until then a dialog given one opens as a standalone modal dialog,
+    /// centered, which is what the portal frontend falls back to as well.
+    pub fn parent(mut self, parent: ParentWindow) -> Self {
+        self.parent = parent;
+        self
+    }
+
+    /// The window [`NativeDialog::parent`] named.
+    pub fn parent_window(&self) -> &ParentWindow {
+        &self.parent
+    }
+
+    /// The dialog's button row, right-aligned in reading order:
+    /// [`ActionRole::Default`] as the primary button, [`ActionRole::Cancel`]
+    /// as an outline one, and the rest as ghost buttons. `on_action` gets
+    /// the index of the action pressed, or of the default when Enter is
+    /// pressed. Escape is [`NativeDialog::frame`]'s, so pass the cancel to
+    /// its `on_escape`.
+    pub fn actions(
+        actions: &[DialogAction],
+        on_action: impl Fn(&usize, &mut Window, &mut App) + 'static,
+    ) -> Div {
+        let on_action: Handler<usize> = Rc::new(on_action);
+        let mut row = div().flex().justify_end().gap(px(8.0));
+        for (index, action) in actions.iter().enumerate() {
+            let variant = match action.role {
+                ActionRole::Default => ButtonVariant::Default,
+                ActionRole::Cancel => ButtonVariant::Outline,
+                ActionRole::Other => ButtonVariant::Ghost,
+            };
+            let on_action = on_action.clone();
+            row = row.child(
+                Button::new(action.label.clone())
+                    .variant(variant)
+                    .on_click(move |_, window, cx| on_action(&index, window, cx)),
+            );
+        }
+        if let Some(default) = DialogAction::default_index(actions) {
+            row = row.child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        let on_action = on_action.clone();
+                        window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
+                            if phase.bubble() && event.keystroke.key == "enter" {
+                                on_action(&default, window, cx);
+                            }
+                        });
+                    },
+                )
+                .size_0(),
+            );
+        }
+        row
+    }
+
+    /// Opens the window with the view `build` makes. It starts with a guess
+    /// at its height, which [`NativeDialog::frame`] corrects on the first
+    /// frame.
+    pub fn open<V: Render + 'static>(
+        self,
+        cx: &mut App,
+        build: impl FnOnce(&mut Window, &mut gpui::Context<V>) -> V,
+    ) -> gpui::Result<gpui::WindowHandle<V>> {
+        let size = gpui::size(px(self.width + 2.0 * Self::PADDING), px(200.0));
+        let options = gpui::WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
+                None, size, cx,
+            ))),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(self.title),
+                ..Default::default()
+            }),
+            kind: gpui::WindowKind::Dialog,
+            is_resizable: false,
+            is_minimizable: false,
+            ..Default::default()
+        };
+        cx.open_window(options, |window, cx| cx.new(|cx| build(window, cx)))
+    }
+
+    /// The root element for a dialog window's view: `content` on the
+    /// theme's background with [`NativeDialog::PADDING`] around it, resizing
+    /// the window to the content's height, and calling `on_escape` when
+    /// Escape is pressed. `focus` is the view's; the frame takes it on the
+    /// first frame, because a window with nothing focused gets no keys.
+    pub fn frame(
+        window: &mut Window,
+        cx: &mut App,
+        focus: &gpui::FocusHandle,
+        content: impl IntoElement,
+        on_escape: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Div {
+        if window.focused(cx).is_none() {
+            window.focus(focus, cx);
+        }
+        let t = Tokens::get(cx);
+        let width = window.viewport_size().width;
+        let measured = div().relative().flex().flex_col().child(content).child(
+            canvas(
+                move |bounds, window, _| {
+                    let wanted = bounds.size.height + px(2.0 * Self::PADDING);
+                    if (window.viewport_size().height - wanted).abs() > px(1.0) {
+                        window.resize(gpui::size(width, wanted));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full(),
+        );
+        div()
+            .track_focus(focus)
+            .size_full()
+            .p(px(Self::PADDING))
+            .bg(t.background)
+            .text_color(t.foreground)
+            .child(measured)
+            .child(escape_listener(Rc::new(on_escape)))
+    }
+}
+
+/// An [`mcsapi_ui::Error`] as an alert dialog in a [`NativeDialog`] window:
+/// the message as the title in the destructive color (the accent for a
+/// warning), each cause, miette's help and the code under it, and "Copy
+/// details", "Learn more" (when the error names a section and there is
+/// documentation) and "OK". The GPUI twin of `mcsapi_components::ErrorDialog`.
+/// "OK" and Escape close the window and call [`ErrorDialog::on_close`]. It
+/// copies what it draws, so `error` need not outlive the call.
+#[must_use = "open it with `dialog.open(cx)`"]
+pub struct ErrorDialog {
+    title: SharedString,
+    window_title: Option<SharedString>,
+    lines: Vec<SharedString>,
+    code: Option<SharedString>,
+    warning: bool,
+    details: SharedString,
+    doc: Option<mcsapi_ui::DocLink>,
+    docs: mcsapi_ui::Docs,
+    address_only: bool,
+    on_close: Option<AppCallback>,
+    focus: Option<gpui::FocusHandle>,
+}
+
+impl ErrorDialog {
+    /// A dialog for `error`, with "Learn more" reading
+    /// [`mcsapi_ui::Docs::from_env`].
+    pub fn new(error: &mcsapi_ui::Error) -> Self {
+        Self {
+            title: error.to_string().into(),
+            window_title: None,
+            lines: error
+                .causes()
+                .map(|cause| format!("• {cause}").into())
+                .chain(error.help().map(Into::into))
+                .collect(),
+            code: error.code().map(Into::into),
+            warning: error.is_warning(),
+            details: error.details().into(),
+            doc: error.doc().cloned(),
+            docs: mcsapi_ui::Docs::from_env(),
+            address_only: false,
+            on_close: None,
+            focus: None,
+        }
+    }
+
+    /// Where "Learn more" looks for the documentation, instead of the
+    /// environment.
+    pub fn docs(mut self, docs: mcsapi_ui::Docs) -> Self {
+        self.docs = docs;
+        self
+    }
+
+    /// Sets the window's title, such as the app's name; "Error", or
+    /// "Warning" for a warning, without one.
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.window_title = Some(title.into());
+        self
+    }
+
+    /// Shows the section's address on the published site instead of "Learn
+    /// more", for a screen with no browser to open it in.
+    pub fn address_only(mut self, address_only: bool) -> Self {
+        self.address_only = address_only;
+        self
+    }
+
+    /// Calls `handler` when the person closes the dialog.
+    pub fn on_close(mut self, handler: impl Fn(&mut App) + 'static) -> Self {
+        self.on_close = Some(Rc::new(handler));
+        self
+    }
+
+    /// Opens the dialog's window.
+    pub fn open(mut self, cx: &mut App) -> gpui::Result<gpui::WindowHandle<Self>> {
+        let title = self
+            .window_title
+            .take()
+            .unwrap_or_else(|| if self.warning { "Warning" } else { "Error" }.into());
+        NativeDialog::new(title).open(cx, |_, cx| Self {
+            focus: Some(cx.focus_handle()),
+            ..self
+        })
+    }
+
+    fn close(&self, window: &mut Window, cx: &mut App) {
+        if let Some(on_close) = &self.on_close {
+            on_close(cx);
+        }
+        window.remove_window();
+    }
+}
+
+impl Render for ErrorDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let t = Tokens::get(cx);
+        let tone = if self.warning {
+            t.primary
+        } else {
+            t.destructive
+        };
+        let address = self
+            .doc
+            .as_ref()
+            .filter(|_| self.address_only)
+            .and_then(|link| self.docs.online_url(link));
+        let muted = |text: SharedString| {
+            div()
+                .text_size(px(14.0))
+                .text_color(t.muted_foreground)
+                .child(text)
+        };
+        let mut buttons = div().flex().justify_end().gap(px(8.0)).mt(px(16.0));
+        let details = self.details.clone();
+        buttons = buttons.child(
+            Button::new("Copy details")
+                .id("error-dialog-copy")
+                .variant(ButtonVariant::Ghost)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(details.to_string()));
+                }),
+        );
+        let openable = !self.docs.is_empty() && !self.address_only;
+        if let Some(link) = self.doc.clone().filter(|_| openable) {
+            let docs = self.docs.clone();
+            buttons = buttons.child(
+                Button::new("Learn more")
+                    .id("error-dialog-learn-more")
+                    .variant(ButtonVariant::Outline)
+                    .on_click(move |_, _, _| {
+                        if let Err(error) = docs.open(&link) {
+                            tracing::warn!(%link, %error, "could not open the documentation");
+                        }
+                    }),
+            );
+        }
+        buttons = buttons.child(
+            Button::new("OK")
+                .id("error-dialog-ok")
+                .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+        );
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .text_size(px(18.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(tone)
+                    .child(self.title.clone()),
+            )
+            .children(self.lines.iter().cloned().map(muted))
+            .children(
+                self.code
+                    .clone()
+                    .map(|code| muted(code).font_family("monospace")),
+            )
+            .children(address.map(|address| muted(format!("More at {address}").into())))
+            .child(buttons);
+        let this = cx.entity().downgrade();
+        let focus = self.focus.get_or_insert_with(|| cx.focus_handle()).clone();
+        NativeDialog::frame(window, cx, &focus, content, move |window, cx| {
+            if let Some(this) = this.upgrade() {
+                this.read(cx)
+                    .on_close
+                    .clone()
+                    .inspect(|on_close| on_close(cx));
+            }
+            window.remove_window();
+        })
     }
 }
 

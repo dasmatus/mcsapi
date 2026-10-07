@@ -1,11 +1,12 @@
 use egui::Ui;
 use mcsapi_components::{
-    AlertDialog, AlertDialogAction, Button, ButtonVariant, Dialog, Input, Label, Tokens, toast,
-    toasts, tooltip, typography,
+    AlertDialog, AlertDialogAction, Button, ButtonVariant, Dialog, ErrorDialog, Input, Label,
+    NativeDialog, Tokens, toast, toasts, tooltip, typography,
 };
 
 use super::row;
 use crate::{Category, Specimen};
+use mcsapi_ui::dialog::{ActionRole, DialogAction};
 
 pub(super) const SPECIMENS: &[Specimen] = &[
     Specimen {
@@ -23,6 +24,22 @@ pub(super) const SPECIMENS: &[Specimen] = &[
         summary: "A modal question that needs an answer before going on.",
         api: &["AlertDialog", "AlertDialogAction"],
         show: alert_dialog,
+    },
+    Specimen {
+        name: "Native Dialog",
+        category: Category::Overlays,
+        source: "mcsapi",
+        summary: "A dialog in a window of its own, over the dimmed app.",
+        api: &["NativeDialog"],
+        show: native_dialog,
+    },
+    Specimen {
+        name: "Error Dialog",
+        category: Category::Overlays,
+        source: "mcsapi",
+        summary: "An error the app reports, as an alert dialog that links into the documentation.",
+        api: &["ErrorDialog", "ErrorDialogResponse"],
+        show: error_dialog,
     },
     Specimen {
         name: "Tooltip",
@@ -48,6 +65,8 @@ pub(super) struct State {
     delete_open: bool,
     publish_open: bool,
     answer: Option<String>,
+    error: Option<mcsapi_ui::Error>,
+    window_open: bool,
 }
 
 impl Default for State {
@@ -58,6 +77,8 @@ impl Default for State {
             delete_open: false,
             publish_open: false,
             answer: None,
+            error: None,
+            window_open: false,
         }
     }
 }
@@ -88,6 +109,56 @@ fn dialog(ui: &mut Ui, state: &mut super::State) {
         state.profile_open = false;
         toast(&ctx, "Profile saved", Some(state.name.clone()));
     }
+}
+
+fn native_dialog(ui: &mut Ui, state: &mut super::State) {
+    let tokens = Tokens::current(ui.ctx());
+    let state = &mut state.overlays;
+    row(ui, "Window", |ui| {
+        if ui
+            .add(Button::new("Rename").variant(ButtonVariant::Outline))
+            .clicked()
+        {
+            state.window_open = true;
+        }
+    });
+    let ctx = ui.ctx().clone();
+    let actions = [
+        DialogAction::new("Cancel", ActionRole::Cancel),
+        DialogAction::new("Rename", ActionRole::Default),
+    ];
+    let answer = NativeDialog::new("gallery-window", &mut state.window_open, "Rename")
+        .show(&ctx, |ui| {
+            ui.label(typography::large(&tokens, "Rename the file"));
+            ui.add(Label::new("Name"));
+            ui.add(Input::new(&mut state.name).width(ui.available_width()));
+            ui.add_space(8.0);
+            NativeDialog::actions(ui, &actions)
+        })
+        .flatten();
+    if let Some(index) = answer {
+        state.window_open = false;
+        if actions[index].role == ActionRole::Default {
+            toast(&ctx, "Renamed", Some(state.name.clone()));
+        }
+    }
+}
+
+fn error_dialog(ui: &mut Ui, state: &mut super::State) {
+    let state = &mut state.overlays;
+    row(ui, "Full report", |ui| {
+        if ui
+            .add(Button::new("Apply theme").variant(ButtonVariant::Outline))
+            .clicked()
+        {
+            state.error = Some(crate::sample_error());
+        }
+    });
+    let docs = crate::sample_docs();
+    let ctx = ui.ctx().clone();
+    ErrorDialog::new("gallery-error", &mut state.error)
+        .docs(&docs)
+        .show(&ctx);
 }
 
 fn alert_dialog(ui: &mut Ui, state: &mut super::State) {

@@ -1,10 +1,13 @@
-//! Overlays: dialog, alert dialog, tooltip, and toasts (shadcn's Sonner).
+//! Overlays: dialog, alert dialog, native dialog window, tooltip, and
+//! toasts (shadcn's Sonner).
 
 use egui::{Align2, Context, Frame, Id, Margin, Modal, Order, Response, RichText, Ui, vec2};
 
+use mcsapi_ui::dialog::{ActionRole, DialogAction, ParentWindow};
+
 use crate::{Button, ButtonVariant, Tokens};
 
-fn dialog_frame(tokens: &Tokens) -> Frame {
+pub(crate) fn dialog_frame(tokens: &Tokens) -> Frame {
     Frame::new()
         .fill(tokens.background)
         .stroke(tokens.border_stroke())
@@ -192,6 +195,218 @@ impl<'a> AlertDialog<'a> {
             *self.open = false;
         }
         action
+    }
+}
+
+/// A dialog in a window of its own: a native child window over the app's,
+/// titled `title` by the window system, with `content` drawn on the theme's
+/// background. While it is open the app's window is dimmed and takes no
+/// input, as under [`Dialog`], so the person answers the dialog first.
+/// Escape and the window's close button set `open` to `false`.
+///
+/// It is native where the egui backend can open more windows (eframe on
+/// Wayland, X11, macOS and Windows), and there the window is a dialog to the
+/// window system: X11 gets `_NET_WM_WINDOW_TYPE_DIALOG`. Where it cannot,
+/// such as the mcsapi compositor drawing egui itself, the same content is a
+/// modal in the app's window, framed like [`Dialog`].
+///
+/// The window fits its content's height; `width` sets its width. The
+/// content is anything a `Ui` holds (a list, a checkbox row, a text field),
+/// usually ending in [`NativeDialog::actions`], the button row that also
+/// answers Enter and Escape.
+///
+/// ```
+/// # egui::__run_test_ui(|ui| {
+/// use mcsapi_components::NativeDialog;
+/// use mcsapi_ui::dialog::{ActionRole, DialogAction};
+///
+/// let mut open = true;
+/// let actions = [
+///     DialogAction::new("Cancel", ActionRole::Cancel),
+///     DialogAction::new("Take Screenshot", ActionRole::Default),
+/// ];
+/// let answer = NativeDialog::new("shot", &mut open, "Take a screenshot?")
+///     .show(ui.ctx(), |ui| {
+///         ui.label("Everything on screen will be in it.");
+///         NativeDialog::actions(ui, &actions)
+///     })
+///     .flatten();
+/// assert_eq!(answer, None);
+/// # });
+/// ```
+#[must_use = "draw it with `dialog.show(ctx, ...)`"]
+pub struct NativeDialog<'a> {
+    id: Id,
+    open: &'a mut bool,
+    title: String,
+    width: f32,
+    parent: ParentWindow,
+}
+
+impl<'a> NativeDialog<'a> {
+    /// A dialog window titled `title`, shown while `open` is true.
+    pub fn new(id_salt: impl egui::AsId, open: &'a mut bool, title: impl Into<String>) -> Self {
+        Self {
+            id: Id::new(id_salt),
+            open,
+            title: title.into(),
+            width: 420.0,
+            parent: ParentWindow::None,
+        }
+    }
+
+    /// Sets the content width (default 420).
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Names another process's window the dialog belongs to, as a portal
+    /// request does. The app's own window is its parent without this.
+    ///
+    /// Not attached yet: winit can neither import an xdg-foreign handle nor
+    /// set an X11 transient-for, so the window opens as a dialog of its own,
+    /// centered. [`NativeDialog::parent_window`] keeps it for the backend
+    /// that can.
+    pub fn parent(mut self, parent: ParentWindow) -> Self {
+        self.parent = parent;
+        self
+    }
+
+    /// The window [`NativeDialog::parent`] named.
+    pub fn parent_window(&self) -> &ParentWindow {
+        &self.parent
+    }
+
+    /// The dialog's button row, right-aligned with the first action
+    /// leftmost: [`ActionRole::Default`] as the primary button,
+    /// [`ActionRole::Cancel`] as an outline one, and the rest as ghost
+    /// buttons. Returns the index of the action chosen this frame, by a
+    /// press, by Enter (the default) or by Escape (the cancel). Closing the
+    /// window is a cancel too: `open` turns `false`.
+    pub fn actions(ui: &mut Ui, actions: &[DialogAction]) -> Option<usize> {
+        let mut chosen = None;
+        let row = vec2(ui.available_width(), 36.0);
+        let layout = egui::Layout::right_to_left(egui::Align::Center);
+        ui.allocate_ui_with_layout(row, layout, |ui| {
+            for (index, action) in actions.iter().enumerate().rev() {
+                let variant = match action.role {
+                    ActionRole::Default => ButtonVariant::Default,
+                    ActionRole::Cancel => ButtonVariant::Outline,
+                    ActionRole::Other => ButtonVariant::Ghost,
+                };
+                if ui
+                    .add(Button::new(&action.label).variant(variant))
+                    .clicked()
+                {
+                    chosen = Some(index);
+                }
+            }
+        });
+        // Read here, inside the dialog's own window, so the keys are the
+        // dialog's, and consumed so the dialog's Escape-to-close does not
+        // answer twice.
+        let key = |key| ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, key));
+        chosen
+            .or_else(|| DialogAction::default_index(actions).filter(|_| key(egui::Key::Enter)))
+            .or_else(|| DialogAction::cancel_index(actions).filter(|_| key(egui::Key::Escape)))
+    }
+
+    /// Whether this backend opens the dialog as a window of its own rather
+    /// than a modal in the app's window.
+    pub fn is_native(ctx: &Context) -> bool {
+        !ctx.embed_viewports()
+    }
+
+    /// Draws the dialog with `content`. Returns `None` while closed.
+    pub fn show<R>(self, ctx: &Context, mut content: impl FnMut(&mut Ui) -> R) -> Option<R> {
+        if !*self.open {
+            return None;
+        }
+        let tokens = Tokens::current(ctx);
+        if !Self::is_native(ctx) {
+            let response = Modal::new(self.id)
+                .backdrop_color(tokens.overlay)
+                .frame(dialog_frame(&tokens))
+                .show(ctx, |ui| {
+                    ui.set_width(self.width);
+                    content(ui)
+                });
+            let escaped = response.is_top_modal
+                && ctx
+                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            if escaped {
+                *self.open = false;
+            }
+            return Some(response.inner);
+        }
+
+        let viewport = egui::ViewportId::from_hash_of(self.id);
+        // The app's window, dimmed and deaf until the dialog closes; a press
+        // on it raises the dialog instead, as a modal child window does.
+        let screen = ctx.content_rect();
+        let backdrop = egui::Area::new(self.id.with("backdrop"))
+            .order(Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter().rect_filled(rect, 0.0, tokens.overlay);
+                response
+            });
+        // egui cannot make the window a child of the app's, so the window
+        // manager may stack it under the app's window, which also maps after
+        // the dialog when the app opens with an error. Hand focus on whenever
+        // the app's window takes it, as a modal child window does.
+        let parent_focused = ctx.input(|input| input.viewport().focused == Some(true));
+        if backdrop.inner.clicked() || parent_focused {
+            ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+        }
+        // The height the content took last frame, so the window fits it.
+        let height_id = self.id.with("height");
+        let height = ctx.data(|data| data.get_temp::<f32>(height_id));
+        let margin = 24.0;
+        let builder = egui::ViewportBuilder::default()
+            .with_title(&self.title)
+            .with_inner_size([self.width + 2.0 * margin, height.unwrap_or(160.0)])
+            .with_resizable(false)
+            .with_minimize_button(false)
+            .with_maximize_button(false)
+            .with_window_type(egui::X11WindowType::Dialog)
+            .with_active(true);
+        let (inner, closed) = ctx.show_viewport_immediate(viewport, builder, |ui, _| {
+            let frame = Frame::new()
+                .fill(tokens.background)
+                .inner_margin(Margin::same(margin as i8));
+            let inner = egui::CentralPanel::default()
+                .frame(frame)
+                .show(ui, |ui| {
+                    ui.set_width(self.width);
+                    let inner = content(ui);
+                    let wanted = ui.min_rect().height() + 2.0 * margin;
+                    if height.is_none_or(|h| (h - wanted).abs() > 0.5) {
+                        ui.ctx()
+                            .data_mut(|data| data.insert_temp(height_id, wanted));
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(
+                                self.width + 2.0 * margin,
+                                wanted,
+                            )));
+                    }
+                    inner
+                })
+                .inner;
+            let closed = ui.input_mut(|input| {
+                input.viewport().close_requested()
+                    || input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            });
+            (inner, closed)
+        });
+        if closed {
+            *self.open = false;
+            // The next opening measures its window afresh.
+            ctx.data_mut(|data| data.remove::<f32>(height_id));
+        }
+        Some(inner)
     }
 }
 

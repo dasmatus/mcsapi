@@ -58,12 +58,14 @@ pub use display::{
     Alert, AlertVariant, AspectRatio, Avatar, Card, Empty, Label, Progress, Separator, Skeleton,
     Spinner, blockquote, typography,
 };
-pub use error::{ErrorAlert, ErrorAlertResponse};
+pub use error::{ErrorAlert, ErrorAlertResponse, ErrorDialog, ErrorDialogResponse};
 pub use form::{Checkbox, Input, RadioGroup, Select, Slider, Switch, Textarea};
 pub use navigation::{
     Collapsible, Pagination, Table, Tabs, accordion_item, breadcrumb, page_window,
 };
-pub use overlay::{AlertDialog, AlertDialogAction, Dialog, Toast, Toaster, toast, toasts, tooltip};
+pub use overlay::{
+    AlertDialog, AlertDialogAction, Dialog, NativeDialog, Toast, Toaster, toast, toasts, tooltip,
+};
 pub use tokens::Tokens;
 
 /// Draws shadcn's focus ring around `rect` while `response` has keyboard focus.
