@@ -190,7 +190,7 @@ pub enum BadgeVariant {
     /// Solid primary fill.
     #[default]
     Default,
-    /// Muted fill.
+    /// Muted fill and text, like a "soon" marker.
     Secondary,
     /// Red fill.
     Destructive,
@@ -234,7 +234,7 @@ impl Widget for Badge {
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &self.text));
         let (fill, text) = match self.variant {
             BadgeVariant::Default => (tokens.primary, tokens.primary_foreground),
-            BadgeVariant::Secondary => (tokens.secondary, tokens.foreground),
+            BadgeVariant::Secondary => (tokens.secondary, tokens.muted_foreground),
             BadgeVariant::Destructive => (tokens.destructive, tokens.destructive_foreground),
             BadgeVariant::Outline => (Color32::TRANSPARENT, tokens.foreground),
         };
@@ -280,7 +280,7 @@ fn paint_pressable(ui: &Ui, response: &Response, rect: Rect, text: &str, on: boo
     paint_focus_ring(ui, response, rect, tokens.control_radius());
 }
 
-fn pressable_size(ui: &Ui, text: &str) -> Vec2 {
+fn pressable_size(ui: &Ui, text: &str, height: f32) -> Vec2 {
     let width = ui
         .painter()
         .layout_no_wrap(
@@ -290,7 +290,7 @@ fn pressable_size(ui: &Ui, text: &str) -> Vec2 {
         )
         .size()
         .x;
-    Vec2::new((width + 20.0).max(36.0), 36.0)
+    Vec2::new((width + 20.0).max(height), height)
 }
 
 /// shadcn's Toggle: a two-state button that stays pressed.
@@ -313,7 +313,7 @@ impl<'a> Toggle<'a> {
 impl Widget for Toggle<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let (rect, mut response) =
-            ui.allocate_exact_size(pressable_size(ui, &self.text), Sense::click());
+            ui.allocate_exact_size(pressable_size(ui, &self.text, 36.0), Sense::click());
         if response.clicked() {
             *self.pressed = !*self.pressed;
             response.mark_changed();
@@ -344,24 +344,38 @@ impl<'a, T: AsRef<str>> ToggleGroup<'a, T> {
 
 impl<T: AsRef<str>> Widget for ToggleGroup<'_, T> {
     fn ui(self, ui: &mut Ui) -> Response {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let mut changed = false;
-            for (index, item) in self.items.iter().enumerate() {
-                let text = item.as_ref();
-                let on = *self.selected == Some(index);
-                let (rect, response) =
-                    ui.allocate_exact_size(pressable_size(ui, text), Sense::click());
-                response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, text));
-                if response.clicked() {
-                    *self.selected = if on { None } else { Some(index) };
-                    changed = true;
-                }
-                paint_pressable(ui, &response, rect, text, *self.selected == Some(index));
-            }
-            changed
-        })
-        .into_changed()
+        let tokens = Tokens::current(ui.ctx());
+        // One sunken, bordered segment holding the items, like the web
+        // interface's system/light/dark switcher.
+        let frame = egui::Frame::new()
+            .fill(tokens.field)
+            .stroke(tokens.border_stroke())
+            .corner_radius(tokens.control_radius())
+            .inner_margin(2);
+        frame
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let mut changed = false;
+                    for (index, item) in self.items.iter().enumerate() {
+                        let text = item.as_ref();
+                        let on = *self.selected == Some(index);
+                        let (rect, response) =
+                            ui.allocate_exact_size(pressable_size(ui, text, 30.0), Sense::click());
+                        response.widget_info(|| {
+                            WidgetInfo::selected(WidgetType::Button, true, on, text)
+                        });
+                        if response.clicked() {
+                            *self.selected = if on { None } else { Some(index) };
+                            changed = true;
+                        }
+                        paint_pressable(ui, &response, rect, text, *self.selected == Some(index));
+                    }
+                    changed
+                })
+                .inner
+            })
+            .into_changed()
     }
 }
 

@@ -55,8 +55,16 @@ impl<T: AsRef<str>> Widget for Tabs<'_, T> {
         let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + 24.0).collect();
         let total = widths.iter().sum::<f32>() + 2.0 * padding;
         let (rect, mut response) = ui.allocate_exact_size(vec2(total, 36.0), Sense::hover());
+        // A sunken, bordered track with the active tab raised out of it, as
+        // the web interface draws its segmented switchers.
         ui.painter()
-            .rect_filled(rect, tokens.card_radius(), tokens.muted);
+            .rect_filled(rect, tokens.control_radius(), tokens.field);
+        ui.painter().rect_stroke(
+            rect,
+            tokens.control_radius(),
+            tokens.border_stroke(),
+            egui::StrokeKind::Inside,
+        );
 
         let mut x = rect.left() + padding;
         for (index, (galley, width)) in galleys.into_iter().zip(widths).enumerate() {
@@ -77,7 +85,7 @@ impl<T: AsRef<str>> Widget for Tabs<'_, T> {
             let on = *self.selected == index;
             let painter = ui.painter();
             if on {
-                painter.rect_filled(trigger, tokens.control_radius(), tokens.background);
+                painter.rect_filled(trigger, tokens.control_radius(), tokens.muted);
             }
             let color = if on || trigger_response.hovered() {
                 tokens.foreground

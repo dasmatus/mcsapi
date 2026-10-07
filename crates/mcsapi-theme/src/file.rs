@@ -14,11 +14,11 @@
 //! inherits = "derisk-dark"   # another theme ID; omitted when complete
 //!
 //! [colors]
-//! background = "#0f172a"
-//! surface = "#1e293b"
-//! foreground = "#f8fafc"
-//! border = "#64748b"
-//! accent = "#a3e635"         # or a built-in accent name such as "sky"
+//! background = "#0a0e12"
+//! surface = "#1e2832"
+//! foreground = "#e2e8f0"
+//! border = "#212c36"         # drawn as is around cards and fields
+//! accent = "#48b3c0"         # or a built-in accent name such as "sky"
 //! destructive = "#dc2626"
 //!
 //! [fonts]
@@ -35,7 +35,7 @@
 //! cursor_size = 24
 //!
 //! [shape]
-//! radius = 6
+//! radius = 6              # controls; cards are two more
 //! ```
 //!
 //! Unknown keys and sections are reported as [`Warning`]s rather than errors,

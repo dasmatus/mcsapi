@@ -50,10 +50,14 @@ impl RenderOnce for Tabs {
             .id(self.id)
             .flex()
             .flex_none()
-            .p(px(3.0))
+            // A sunken, bordered track with the active tab raised out of it,
+            // as the web interface draws its segmented switchers.
+            .p(px(2.0))
             .gap(px(2.0))
-            .rounded(t.radius * 1.5)
-            .bg(t.muted)
+            .rounded(t.radius)
+            .bg(t.field)
+            .border_1()
+            .border_color(t.border)
             .children(self.tabs.into_iter().enumerate().map(|(index, tab)| {
                 let active = index == self.selected;
                 let on_click = self.on_change.clone().map(|handler| {
@@ -74,7 +78,7 @@ impl RenderOnce for Tabs {
                     } else {
                         t.muted_foreground
                     })
-                    .when(active, |tab| tab.bg(t.background).shadow_sm())
+                    .when(active, |tab| tab.bg(t.muted))
                     .child(tab)
             }))
     }

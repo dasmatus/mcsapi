@@ -53,7 +53,8 @@ impl Card {
             .fill(tokens.card)
             .stroke(tokens.border_stroke())
             .corner_radius(tokens.card_radius())
-            .inner_margin(Margin::same(24))
+            // The web interface's cards are dense: rows sit 16 px in.
+            .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 if let Some(title) = &self.title {

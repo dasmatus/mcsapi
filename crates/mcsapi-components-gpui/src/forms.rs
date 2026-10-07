@@ -60,6 +60,7 @@ fn text_frame(input: Input, window: &Window, cx: &App) -> gpui::Div {
         .px(px(12.0))
         .py(px(8.0))
         .min_h(px(20.0 * input.rows as f32 + 16.0))
+        .bg(t.field)
         .border_1()
         .border_color(if focused { t.ring } else { t.border })
         .rounded(t.radius)
@@ -239,18 +240,38 @@ impl Switch {
 
 impl RenderOnce for Switch {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        crate::tokens::ensure_installed(cx);
-        let mut switch = ui::Switch::new(self.id, ToggleState::from(self.on))
-            .label_size(LabelSize::Default)
-            .disabled(self.disabled);
-        if let Some(label) = self.label {
-            switch = switch.label(label);
-        }
-        if let Some(handler) = self.on_change {
-            switch =
-                switch.on_click(move |state, window, cx| handler(&state.selected(), window, cx));
-        }
-        switch
+        let t = Tokens::get(cx);
+        let on = self.on;
+        let on_click = self.on_change.map(|handler| {
+            Rc::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                handler(&!on, window, cx)
+            }) as Handler<ClickEvent>
+        });
+        // Off is a dark, bordered pill with a dim knob, like the web
+        // interface's; on fills with the accent. Same shape as the egui one.
+        let track = div()
+            .flex_none()
+            .w(px(32.0))
+            .h(px(18.0))
+            .p(px(2.0))
+            .flex()
+            .items_center()
+            .rounded_full()
+            .border_1()
+            .when(on, |track| {
+                track.justify_end().bg(t.primary).border_color(t.primary)
+            })
+            .when(!on, |track| track.bg(t.field).border_color(t.border))
+            .child(div().size(px(12.0)).rounded_full().bg(if on {
+                t.primary_foreground
+            } else {
+                t.muted_foreground
+            }));
+        pressable(self.id, self.disabled, on_click, &t)
+            .gap(px(8.0))
+            .rounded_full()
+            .child(track)
+            .children(self.label)
     }
 }
 

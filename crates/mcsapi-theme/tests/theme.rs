@@ -20,23 +20,29 @@ fn contrast_follows_wcag() {
 }
 
 #[test]
-fn tokens_match_the_derivation_components_used_before() {
-    // Values mcsapi-components' egui `Tokens::from_theme(&Theme::default())`
-    // produced before the theme engine, so the default desktop looks the same.
+fn default_tokens_match_the_web_interface() {
+    // Measured from a screenshot of the LosOS web interface: page, card,
+    // card border and accent exactly; secondary text as close as the
+    // derivation gets to its slate-400.
     let t = Theme::dark().tokens();
-    assert_eq!(t.card, Color::rgb(23, 32, 51));
-    assert_eq!(t.muted_foreground, Color::rgb(167, 176, 190));
-    assert_eq!(t.hover, Color::rgb(55, 67, 87));
-    assert_eq!(t.border, Color::rgb(65, 79, 99));
-    assert_eq!(t.primary_foreground, Color::rgb(15, 23, 42));
+    assert_eq!(t.background, Color::rgb(10, 14, 18));
+    assert_eq!(t.card, Color::rgb(20, 27, 34));
+    assert_eq!(t.border, Color::rgb(33, 44, 54));
+    assert_eq!(t.primary, Color::rgb(72, 179, 192));
+    assert_eq!(t.muted_foreground, Color::rgb(148, 155, 164));
+    assert_eq!(t.field, Color::rgb(16, 22, 28));
+    assert_eq!(t.hover, Color::rgb(31, 41, 51));
+    // Dark text on the accent, as on the web interface's selected item.
+    assert_eq!(t.primary_foreground, Color::rgb(10, 14, 18));
     assert_eq!(t.destructive_foreground, Color::rgb(254, 242, 242));
     assert_eq!(t.overlay, Color::black_alpha(160));
     assert_eq!(t.radius, 6);
 
+    // The light theme's border is the one the old derivation drew.
     let light = mcsapi_theme::Tokens::derive(&Theme::light().palette, 6);
     assert_eq!(light.card, Color::rgb(237, 241, 246));
-    assert_eq!(light.muted_foreground, Color::rgb(88, 100, 120));
-    assert_eq!(light.hover, Color::rgb(199, 208, 220));
+    assert_eq!(light.muted_foreground, Color::rgb(99, 107, 121));
+    assert_eq!(light.hover, Color::rgb(212, 220, 230));
     assert_eq!(light.border, Color::rgb(187, 198, 212));
 }
 
@@ -216,7 +222,7 @@ fn exports_carry_the_theme() {
     assert!(ini.contains("gtk-font-name=Ubuntu 10.5"));
 
     let xml = export::android_colors(&Theme::dark());
-    assert!(xml.contains("<color name=\"mcsapi_background\">#ff0f172a</color>"));
+    assert!(xml.contains("<color name=\"mcsapi_background\">#ff0a0e12</color>"));
     assert!(xml.contains("<color name=\"colorAccent\">@color/mcsapi_primary</color>"));
     assert!(xml.contains("<color name=\"mcsapi_overlay\">#a0000000</color>"));
 
@@ -224,11 +230,21 @@ fn exports_carry_the_theme() {
     assert!(
         json.starts_with("{\"id\":\"derisk-dark\",\"name\":\"Derisk Dark\",\"scheme\":\"dark\"")
     );
-    assert!(json.contains("\"primary\":\"#a3e635\""));
+    assert!(json.contains("\"primary\":\"#48b3c0\""));
+    assert!(json.contains("\"field\":\"#10161c\""));
     assert!(json.contains("\"radius\":6"));
     // Balanced braces and brackets: the JSON is well formed enough for any
     // parser to read; the CI job for consumers checks it with a real one.
     assert_eq!(json.matches('{').count(), json.matches('}').count());
+
+    let css = export::css_variables(&Theme::dark());
+    assert!(css.starts_with(":root {\n  color-scheme: dark;\n"));
+    assert!(css.contains("  --background: #0a0e12;\n"));
+    assert!(css.contains("  --muted-foreground: #949ba4;\n"));
+    assert!(css.contains("  --overlay: #000000a0;\n"));
+    assert!(css.contains("  --radius: 8px;\n  --radius-control: 6px;\n"));
+    assert!(css.contains("  --font-sans: \"Ubuntu\";\n"));
+    assert!(css.ends_with("}\n"));
 }
 
 #[test]

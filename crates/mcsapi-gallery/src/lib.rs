@@ -30,7 +30,7 @@ pub mod gpui_gallery;
 mod specimens;
 
 use egui::{Color32, RichText, Ui};
-use mcsapi_components::{Button, ButtonSize, ButtonVariant, Input, Select, Toaster, Tokens};
+use mcsapi_components::{Input, Select, Toaster, Tokens};
 use mcsapi_ui::{App, Theme};
 
 pub use specimens::State;
@@ -157,7 +157,8 @@ pub const PRESETS: [Preset; 3] = [
             background: Color32::from_rgb(255, 255, 255),
             surface: Color32::from_rgb(241, 245, 249),
             foreground: Color32::from_rgb(15, 23, 42),
-            border: Color32::from_rgb(148, 163, 184),
+            // Borders are drawn as chosen, so a faint one, like shadcn's.
+            border: Color32::from_rgb(226, 232, 240),
             accent: Color32::from_rgb(37, 99, 235),
         }),
     },
@@ -167,7 +168,7 @@ pub const PRESETS: [Preset; 3] = [
             background: Color32::from_rgb(24, 16, 38),
             surface: Color32::from_rgb(44, 33, 66),
             foreground: Color32::from_rgb(245, 243, 255),
-            border: Color32::from_rgb(124, 108, 160),
+            border: Color32::from_rgb(61, 47, 90),
             accent: Color32::from_rgb(196, 181, 253),
         }),
     },
@@ -233,7 +234,7 @@ impl Gallery {
         );
         ui.add_space(8.0);
         let all = self.selected.is_none();
-        if nav_button(ui, "All widgets", all).clicked() {
+        if nav_button(ui, tokens, "All widgets", all).clicked() {
             self.selected = None;
         }
         egui::ScrollArea::vertical()
@@ -248,13 +249,13 @@ impl Gallery {
                     }
                     ui.add_space(10.0);
                     ui.label(
-                        RichText::new(category.name().to_uppercase())
+                        RichText::new(category.name())
                             .font(tokens.small_font())
                             .color(tokens.muted_foreground),
                     );
                     for specimen in items {
                         let selected = self.selected == Some(specimen.name);
-                        if nav_button(ui, specimen.name, selected).clicked() {
+                        if nav_button(ui, tokens, specimen.name, selected).clicked() {
                             self.selected = Some(specimen.name);
                         }
                     }
@@ -266,14 +267,14 @@ impl Gallery {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("mcsapi widget gallery")
-                    .size(20.0)
+                    .size(16.0)
                     .strong()
                     .color(tokens.foreground),
             );
-            ui.label(
-                RichText::new(format!("{} widgets", specimens().count()))
-                    .font(tokens.body_font())
-                    .color(tokens.muted_foreground),
+            // A chip, like the web interface's "this box" beside its logo.
+            ui.add(
+                mcsapi_components::Badge::new(format!("{} widgets", specimens().count()))
+                    .variant(mcsapi_components::BadgeVariant::Outline),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Right to left: the select sits at the edge, its caption before it.
@@ -324,23 +325,42 @@ impl App for Gallery {
         tokens.install(ui.ctx());
         ui.ctx().set_visuals(visuals(&theme));
 
+        // Laid out like the LosOS web interface: a top bar over the page, a
+        // sunken, bordered sidebar, and the specimens as cards beside it.
+        egui::Frame::new()
+            .fill(tokens.field)
+            .inner_margin(egui::Margin::symmetric(16, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.header(ui, &tokens);
+            });
+        let bar = ui.min_rect();
+        ui.painter()
+            .hline(bar.x_range(), bar.bottom(), tokens.border_stroke());
         egui::Frame::new()
             .fill(theme.background)
             .inner_margin(16)
             .show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
-                self.header(ui, &tokens);
-                ui.add_space(8.0);
-                ui.add(mcsapi_components::Separator::horizontal());
-                ui.add_space(8.0);
                 egui::Panel::left("mcsapi-gallery-sidebar")
                     .resizable(false)
-                    .exact_size(200.0)
+                    .show_separator_line(false)
+                    .exact_size(220.0)
                     .frame(egui::Frame::new().inner_margin(egui::Margin {
-                        right: 16,
+                        right: 24,
                         ..Default::default()
                     }))
-                    .show(ui, |ui| self.sidebar(ui, &tokens));
+                    .show(ui, |ui| {
+                        egui::Frame::new()
+                            .fill(tokens.field)
+                            .stroke(tokens.border_stroke())
+                            .corner_radius(tokens.card_radius())
+                            .inner_margin(8)
+                            .show(ui, |ui| {
+                                ui.set_min_height(ui.available_height());
+                                self.sidebar(ui, &tokens)
+                            });
+                    });
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new())
                     .show(ui, |ui| self.content(ui, &tokens));
@@ -349,20 +369,48 @@ impl App for Gallery {
     }
 }
 
-fn nav_button(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
-    let variant = if selected {
-        ButtonVariant::Secondary
+/// A sidebar entry: the selected one is a solid accent pill with a
+/// chevron, as in the web interface's navigation tree.
+fn nav_button(ui: &mut Ui, tokens: &Tokens, text: &str, selected: bool) -> egui::Response {
+    let size = egui::vec2(ui.available_width(), 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, text));
+    let painter = ui.painter();
+    let (fill, color) = if selected {
+        (tokens.primary, tokens.primary_foreground)
+    } else if response.hovered() {
+        (tokens.hover, tokens.foreground)
     } else {
-        ButtonVariant::Ghost
+        (Color32::TRANSPARENT, tokens.foreground)
     };
-    ui.add(Button::new(text).variant(variant).size(ButtonSize::Sm))
+    painter.rect_filled(rect, tokens.control_radius(), fill);
+    let inner = rect.shrink2(egui::vec2(10.0, 0.0));
+    painter.text(
+        inner.left_center(),
+        egui::Align2::LEFT_CENTER,
+        text,
+        tokens.body_font(),
+        color,
+    );
+    if selected {
+        painter.text(
+            inner.right_center(),
+            egui::Align2::RIGHT_CENTER,
+            "›",
+            tokens.body_font(),
+            color,
+        );
+    }
+    response
 }
 
 fn specimen_frame(ui: &mut Ui, tokens: &Tokens, specimen: &Specimen, state: &mut State) {
     egui::Frame::new()
+        .fill(tokens.card)
         .stroke(tokens.border_stroke())
         .corner_radius(tokens.card_radius())
-        .inner_margin(20)
+        .inner_margin(16)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {

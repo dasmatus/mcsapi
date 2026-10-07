@@ -11,7 +11,7 @@ use crate::{IntoChanged as _, Tokens, paint_focus_ring};
 
 fn text_frame(tokens: &Tokens) -> Frame {
     Frame::new()
-        .fill(Color32::TRANSPARENT)
+        .fill(tokens.field)
         .stroke(tokens.border_stroke())
         .corner_radius(tokens.control_radius())
         .inner_margin(Margin::symmetric(12, 8))
@@ -249,13 +249,24 @@ impl Widget for Switch<'_> {
         let t = ui.ctx().animate_bool_responsive(response.id, on);
         let painter = ui.painter();
         let radius = CornerRadius::same(u8::MAX);
-        painter.rect_filled(track, radius, tokens.hover.lerp_to_gamma(tokens.primary, t));
-        let knob_radius = track.height() / 2.0 - 2.0;
+        // Off is a dark, bordered pill with a dim knob, like the web
+        // interface's; on fills with the accent and the border fades out.
+        painter.rect_filled(track, radius, tokens.field.lerp_to_gamma(tokens.primary, t));
+        painter.rect_stroke(
+            track,
+            radius,
+            Stroke::new(1.0, tokens.border.gamma_multiply(1.0 - t)),
+            StrokeKind::Inside,
+        );
+        let knob_radius = track.height() / 2.0 - 3.0;
         let x = egui::lerp(
-            (track.left() + knob_radius + 2.0)..=(track.right() - knob_radius - 2.0),
+            (track.left() + knob_radius + 3.0)..=(track.right() - knob_radius - 3.0),
             t,
         );
-        painter.circle_filled(pos2(x, track.center().y), knob_radius, tokens.background);
+        let knob = tokens
+            .muted_foreground
+            .lerp_to_gamma(tokens.primary_foreground, t);
+        painter.circle_filled(pos2(x, track.center().y), knob_radius, knob);
         paint_focus_ring(ui, &response, track, radius);
         response
     }

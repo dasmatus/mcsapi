@@ -6,10 +6,9 @@ use gpui::{
     App, ClickEvent, Div, ElementId, FontWeight, IntoElement, ParentElement, RenderOnce,
     SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
-use theme::ActiveTheme as _;
 use ui::{
     ButtonCommon as _, ButtonSize as ZedButtonSize, ButtonStyle, Clickable as _, Disableable as _,
-    FixedWidth as _, LabelSize, TintColor, Toggleable as _,
+    FixedWidth as _, LabelSize,
 };
 
 use crate::{Handler, Tokens};
@@ -44,17 +43,14 @@ pub(crate) fn pressable(
     }
 }
 
-/// The Zed button style and label color for a shadcn variant. shadcn's
-/// solid primary and destructive fills become Zed's accent and error tints,
-/// which the theme derives from the same tokens.
+/// The Zed button style and label color for a shadcn variant that Zed draws
+/// the way shadcn does. The solid ones are [`solid_button`]s.
 fn zed_style(variant: ButtonVariant) -> (ButtonStyle, Option<ui::Color>) {
     match variant {
-        ButtonVariant::Secondary => (ButtonStyle::Filled, None),
-        ButtonVariant::Destructive => (ButtonStyle::Tinted(TintColor::Error), None),
         ButtonVariant::Outline => (ButtonStyle::Outlined, None),
         ButtonVariant::Ghost => (ButtonStyle::Subtle, None),
         ButtonVariant::Link => (ButtonStyle::Transparent, Some(ui::Color::Accent)),
-        _ => (ButtonStyle::Tinted(TintColor::Accent), None),
+        _ => (ButtonStyle::Filled, None),
     }
 }
 
@@ -128,9 +124,49 @@ impl Button {
     }
 }
 
+/// shadcn's solid fill for the primary and destructive variants, which Zed's
+/// buttons only tint: the web interface's buttons and selected items are
+/// solid accent with dark text, so mcsapi's are too.
+fn solid_button(button: Button, t: &Tokens) -> gpui::AnyElement {
+    let (fill, text) = match button.variant {
+        ButtonVariant::Destructive => (t.destructive, t.destructive_foreground),
+        _ => (t.primary, t.primary_foreground),
+    };
+    let (height, padding) = match button.size {
+        ButtonSize::Sm => (32.0, 12.0),
+        ButtonSize::Lg => (40.0, 32.0),
+        ButtonSize::Icon => (36.0, 0.0),
+        _ => (36.0, 16.0),
+    };
+    let mut element = pressable(button.id, button.disabled, button.on_click, t)
+        .h(px(height))
+        .px(px(padding))
+        .rounded(t.radius)
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .bg(fill)
+        .text_color(text)
+        .text_size(px(14.0))
+        .font_weight(FontWeight::MEDIUM)
+        .child(button.label);
+    if button.size == ButtonSize::Icon {
+        element = element.w(px(height));
+    }
+    if !button.disabled {
+        element = element.hover(|style| style.opacity(0.9));
+    }
+    element.into_any_element()
+}
+
 impl RenderOnce for Button {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         crate::tokens::ensure_installed(cx);
+        if matches!(
+            self.variant,
+            ButtonVariant::Default | ButtonVariant::Destructive
+        ) {
+            return solid_button(self, &Tokens::get(cx));
+        }
         let (style, color) = zed_style(self.variant);
         let size = zed_size(self.size);
         let mut button = ui::Button::new(self.id, self.label)
@@ -148,11 +184,11 @@ impl RenderOnce for Button {
         if let Some(handler) = self.on_click {
             button = button.on_click(move |event, window, cx| handler(event, window, cx));
         }
-        button
+        button.into_any_element()
     }
 }
 
-/// shadcn's Badge, drawn by Zed's [`ui::Chip`].
+/// shadcn's Badge: a small pill of text, the same shape as the egui one.
 #[derive(IntoElement)]
 #[must_use = "add it as a child"]
 pub struct Badge {
@@ -178,40 +214,33 @@ impl Badge {
 
 impl RenderOnce for Badge {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        crate::tokens::ensure_installed(cx);
-        let theme = cx.theme();
-        let (status, colors) = (theme.status(), theme.colors());
-        let (fill, border, label) = match self.variant {
-            BadgeVariant::Secondary => (
-                colors.element_background,
-                colors.border_transparent,
-                ui::Color::Default,
-            ),
-            BadgeVariant::Destructive => (
-                status.error_background,
-                status.error_border,
-                ui::Color::Error,
-            ),
-            BadgeVariant::Outline => (
-                colors.ghost_element_background,
-                colors.border,
-                ui::Color::Default,
-            ),
-            _ => (
-                status.info_background,
-                status.info_border,
-                ui::Color::Accent,
-            ),
+        let t = Tokens::get(cx);
+        let clear = gpui::transparent_black();
+        let (fill, border, text) = match self.variant {
+            BadgeVariant::Secondary => (t.secondary, clear, t.muted_foreground),
+            BadgeVariant::Destructive => (t.destructive, clear, t.destructive_foreground),
+            BadgeVariant::Outline => (clear, t.border, t.foreground),
+            _ => (t.primary, clear, t.primary_foreground),
         };
-        ui::Chip::new(self.text)
-            .bg_color(fill)
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .px(px(8.0))
+            .py(px(2.0))
+            .rounded_full()
+            .border_1()
             .border_color(border)
-            .label_color(label)
+            .bg(fill)
+            .text_size(px(12.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(text)
+            .child(self.text)
     }
 }
 
-/// shadcn's Toggle: a button that stays pressed, drawn by Zed's
-/// [`ui::Button`] in its toggled state.
+/// shadcn's Toggle: a button that stays pressed, raised onto the muted fill
+/// like the egui one.
 #[derive(IntoElement)]
 #[must_use = "add it as a child"]
 pub struct Toggle {
@@ -219,6 +248,7 @@ pub struct Toggle {
     label: SharedString,
     pressed: bool,
     disabled: bool,
+    height: f32,
     on_toggle: Option<Handler<bool>>,
 }
 
@@ -231,6 +261,7 @@ impl Toggle {
             label,
             pressed,
             disabled: false,
+            height: 36.0,
             on_toggle: None,
         }
     }
@@ -256,16 +287,31 @@ impl Toggle {
 
 impl RenderOnce for Toggle {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        crate::tokens::ensure_installed(cx);
+        let t = Tokens::get(cx);
         let pressed = self.pressed;
-        let mut toggle = ui::Button::new(self.id, self.label)
-            .style(ButtonStyle::Subtle)
-            .size(ZedButtonSize::Medium)
-            .label_size(LabelSize::Default)
-            .toggle_state(pressed)
-            .disabled(self.disabled);
-        if let Some(handler) = self.on_toggle {
-            toggle = toggle.on_click(move |_, window, cx| handler(&!pressed, window, cx));
+        let on_click = self.on_toggle.map(|handler| {
+            Rc::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                handler(&!pressed, window, cx)
+            }) as Handler<ClickEvent>
+        });
+        let (muted, foreground) = (t.muted, t.foreground);
+        let mut toggle = pressable(self.id, self.disabled, on_click, &t)
+            .h(px(self.height))
+            .min_w(px(self.height))
+            .px(px(10.0))
+            .rounded(t.radius)
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .text_size(px(14.0))
+            .text_color(if pressed {
+                t.foreground
+            } else {
+                t.muted_foreground
+            })
+            .when(pressed, |toggle| toggle.bg(t.muted))
+            .child(self.label);
+        if !self.disabled {
+            toggle = toggle.hover(move |style| style.bg(muted).text_color(foreground));
         }
         toggle
     }
@@ -316,16 +362,26 @@ impl ToggleGroup {
 }
 
 impl RenderOnce for ToggleGroup {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let t = Tokens::get(cx);
         let selected = self.selected;
+        // One sunken, bordered segment holding the items, like the web
+        // interface's system/light/dark switcher.
         div()
             .id(self.id)
             .flex()
-            .gap(px(4.0))
+            .flex_none()
+            .p(px(2.0))
+            .gap(px(2.0))
+            .bg(t.field)
+            .border_1()
+            .border_color(t.border)
+            .rounded(t.radius)
             .children(self.items.into_iter().enumerate().map(|(index, item)| {
                 let mut toggle = Toggle::new(item, selected == Some(index))
                     .id(index)
                     .enabled(!self.disabled);
+                toggle.height = 30.0;
                 if let Some(handler) = self.on_select.clone() {
                     toggle = toggle.on_toggle(move |pressed, window, cx| {
                         handler(&pressed.then_some(index), window, cx)

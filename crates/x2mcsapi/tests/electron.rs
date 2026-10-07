@@ -70,8 +70,8 @@ fn app_content_follows_the_theme() {
     let _ = std::fs::remove_dir_all(profile);
 
     let request = request.expect("page never reported a themed background");
-    // Default shell background, rgb(15, 23, 42), URL-encoded.
-    assert!(request.contains("rgb(15%2C%2023%2C%2042)"), "{request}");
+    // Default shell background, rgb(10, 14, 18), URL-encoded.
+    assert!(request.contains("rgb(10%2C%2014%2C%2018)"), "{request}");
 }
 
 /// Serves the test page, and forwards its report request line to `report`.
