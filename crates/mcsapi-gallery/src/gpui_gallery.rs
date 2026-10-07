@@ -13,10 +13,10 @@ use mcsapi::{Desktop, WindowId, WorkspaceId, widgets::gpui_workspace_bar};
 use mcsapi_components_gpui::{
     Alert, AlertDialog, AlertDialogAction, AlertVariant, AspectRatio, Avatar, Badge, BadgeVariant,
     Button, ButtonSize, ButtonVariant, Card, Checkbox, Collapsible, Dialog, Empty, ErrorAlert,
-    ErrorDialog, Input, Kbd, Label, Pagination, Progress, RadioGroup, Select, Separator, Skeleton,
-    Slider, Spinner, Switch, Table, Tabs, TextInput, Textarea, Toaster, Toggle, ToggleGroup,
-    Tokens, accordion_item, blockquote, breadcrumb, page_window, toast, toasts, tooltip,
-    typography,
+    ErrorDialog, Input, Kbd, Label, NativeDialog, Pagination, Progress, RadioGroup, Select,
+    Separator, Skeleton, Slider, Spinner, Switch, Table, Tabs, TextInput, Textarea, Toaster,
+    Toggle, ToggleGroup, Tokens, accordion_item, blockquote, breadcrumb, page_window, toast,
+    toasts, tooltip, typography,
 };
 use mcsapi_ui::Theme;
 
@@ -58,6 +58,7 @@ pub(crate) const RENDERERS: &[(&str, Renderer)] = &[
     ("Table", table),
     ("Dialog", dialog),
     ("Alert Dialog", alert_dialog),
+    ("Native Dialog", native_dialog),
     ("Error Dialog", error_dialog),
     ("Tooltip", tooltips),
     ("Toast", toast_demo),
@@ -1522,6 +1523,60 @@ fn alert_dialog(
         ));
     }
     rows(rows_list)
+}
+
+/// The Native Dialog specimen's window.
+struct SampleDialog {
+    focus: gpui::FocusHandle,
+}
+
+impl Render for SampleDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Tokens::get(cx);
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(typography::large(&t, "A window of its own"))
+            .child(typography::muted(
+                &t,
+                "The window system keeps it over the gallery until it closes.",
+            ))
+            .child(
+                div().flex().justify_end().mt(px(8.0)).child(
+                    Button::new("Close")
+                        .id("sample-dialog-close")
+                        .on_click(|_, window, _| window.remove_window()),
+                ),
+            );
+        let focus = self.focus.clone();
+        NativeDialog::frame(window, cx, &focus, content, |window, _| {
+            window.remove_window()
+        })
+    }
+}
+
+fn native_dialog(
+    _: &mut GalleryView,
+    t: &Tokens,
+    _: &mut Window,
+    _: &mut Context<GalleryView>,
+) -> Div {
+    rows([row(
+        t,
+        "Window",
+        [any(Button::new("Open window")
+            .variant(ButtonVariant::Outline)
+            .on_click(|_, _, cx| {
+                let opened =
+                    NativeDialog::new("mcsapi widget gallery").open(cx, |_, cx| SampleDialog {
+                        focus: cx.focus_handle(),
+                    });
+                if let Err(error) = opened {
+                    tracing::warn!(%error, "could not open the dialog window");
+                }
+            }))],
+    )])
 }
 
 fn error_dialog(

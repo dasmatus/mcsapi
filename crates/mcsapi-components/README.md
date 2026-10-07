@@ -70,7 +70,8 @@ are reimplementations in Rust and egui, not copies of the React source.
 | Component | Rust API | What it is |
 | --- | --- | --- |
 | Error alert | `ErrorAlert` | An `mcsapi_ui::Error` (a miette report) as a destructive alert: message, causes, help, code, and "Learn more" into the documentation section the error names, offline copy first (`mcsapi_ui::error`). |
-| Error dialog | `ErrorDialog` | The same error as an alert dialog: a modal with the message as its title, "Copy details", "Learn more" and "OK"; it shows while the app holds an error and "OK" or Escape clears it. |
+| Native dialog | `NativeDialog` | A dialog in a window of its own, modal to the app's window (a transient dialog on X11, an `xdg_dialog_v1` modal child on Wayland in the GPUI version), sized to its content, closed by Escape or the window's close button. Where the backend draws every window into one surface, such as the mcsapi compositor, it is a `Modal` in the app's window instead. |
+| Error dialog | `ErrorDialog` | The same error as an alert dialog, built on `NativeDialog`: the message as its title, "Copy details", "Learn more" and "OK"; it shows while the app holds an error and "OK" or Escape clears it. |
 
 ## Not ported yet (shadcn/ui)
 
