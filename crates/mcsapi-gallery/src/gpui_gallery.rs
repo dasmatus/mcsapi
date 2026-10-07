@@ -13,9 +13,10 @@ use mcsapi::{Desktop, WindowId, WorkspaceId, widgets::gpui_workspace_bar};
 use mcsapi_components_gpui::{
     Alert, AlertDialog, AlertDialogAction, AlertVariant, AspectRatio, Avatar, Badge, BadgeVariant,
     Button, ButtonSize, ButtonVariant, Card, Checkbox, Collapsible, Dialog, Empty, ErrorAlert,
-    Input, Kbd, Label, Pagination, Progress, RadioGroup, Select, Separator, Skeleton, Slider,
-    Spinner, Switch, Table, Tabs, TextInput, Textarea, Toaster, Toggle, ToggleGroup, Tokens,
-    accordion_item, blockquote, breadcrumb, page_window, toast, toasts, tooltip, typography,
+    ErrorDialog, Input, Kbd, Label, Pagination, Progress, RadioGroup, Select, Separator, Skeleton,
+    Slider, Spinner, Switch, Table, Tabs, TextInput, Textarea, Toaster, Toggle, ToggleGroup,
+    Tokens, accordion_item, blockquote, breadcrumb, page_window, toast, toasts, tooltip,
+    typography,
 };
 use mcsapi_ui::Theme;
 
@@ -57,6 +58,7 @@ pub(crate) const RENDERERS: &[(&str, Renderer)] = &[
     ("Table", table),
     ("Dialog", dialog),
     ("Alert Dialog", alert_dialog),
+    ("Error Dialog", error_dialog),
     ("Tooltip", tooltips),
     ("Toast", toast_demo),
     ("Workspace Bar", workspace_bar),
@@ -134,6 +136,7 @@ pub struct GalleryView {
     profile_name: Entity<TextInput>,
     delete_open: bool,
     publish_open: bool,
+    error_open: bool,
     answer: Option<String>,
     // Shell
     desktop: Desktop,
@@ -211,6 +214,7 @@ impl GalleryView {
             profile_name: text(cx, |input| input.with_text("Pedro Duarte")),
             delete_open: false,
             publish_open: false,
+            error_open: false,
             answer: None,
             desktop: sample_desktop(4),
         };
@@ -1513,6 +1517,29 @@ fn alert_dialog(
         ));
     }
     rows(rows_list)
+}
+
+fn error_dialog(
+    view: &mut GalleryView,
+    t: &Tokens,
+    _: &mut Window,
+    cx: &mut Context<GalleryView>,
+) -> Div {
+    let mut controls = vec![any(Button::new("Apply theme")
+        .variant(ButtonVariant::Outline)
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.error_open = true;
+            cx.notify();
+        })))];
+    if view.error_open {
+        controls.push(any(ErrorDialog::new(&crate::sample_error())
+            .docs(crate::sample_docs())
+            .on_close(cx.listener(|this, _, _, cx| {
+                this.error_open = false;
+                cx.notify();
+            }))));
+    }
+    rows([row(t, "Full report", controls)])
 }
 
 fn tooltips(_: &mut GalleryView, t: &Tokens, _: &mut Window, _: &mut Context<GalleryView>) -> Div {

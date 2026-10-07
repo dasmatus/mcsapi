@@ -266,3 +266,37 @@ fn escape_cancels_an_alert_dialog() {
     assert_eq!(answer, Some(AlertDialogAction::Cancel));
     assert!(!open);
 }
+
+#[test]
+fn an_error_dialog_shows_until_escape_takes_the_error() {
+    let ctx = egui::Context::default();
+    let docs = mcsapi_ui::Docs::new(None, None);
+    let mut error = Some(mcsapi_ui::Error::msg("Could not save"));
+    let mut closed = false;
+    let output = frame(&ctx, 0.0, vec![], |ui| {
+        closed = ErrorDialog::new("error", &mut error)
+            .docs(&docs)
+            .show(ui.ctx())
+            .closed;
+    });
+    assert!(!output.shapes.is_empty());
+    assert!(!closed && error.is_some(), "the dialog stays without input");
+    let escape = Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    };
+    frame(&ctx, 0.1, vec![escape], |ui| {
+        closed = ErrorDialog::new("error", &mut error)
+            .docs(&docs)
+            .show(ui.ctx())
+            .closed;
+    });
+    assert!(closed && error.is_none());
+    frame(&ctx, 0.2, vec![], |ui| {
+        let shown = ErrorDialog::new("error", &mut error).show(ui.ctx());
+        assert!(!shown.closed, "nothing shows without an error");
+    });
+}

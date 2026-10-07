@@ -1,7 +1,7 @@
 use egui::Ui;
 use mcsapi_components::{
-    AlertDialog, AlertDialogAction, Button, ButtonVariant, Dialog, Input, Label, Tokens, toast,
-    toasts, tooltip, typography,
+    AlertDialog, AlertDialogAction, Button, ButtonVariant, Dialog, ErrorDialog, Input, Label,
+    Tokens, toast, toasts, tooltip, typography,
 };
 
 use super::row;
@@ -23,6 +23,14 @@ pub(super) const SPECIMENS: &[Specimen] = &[
         summary: "A modal question that needs an answer before going on.",
         api: &["AlertDialog", "AlertDialogAction"],
         show: alert_dialog,
+    },
+    Specimen {
+        name: "Error Dialog",
+        category: Category::Overlays,
+        source: "mcsapi",
+        summary: "An error the app reports, as an alert dialog that links into the documentation.",
+        api: &["ErrorDialog", "ErrorDialogResponse"],
+        show: error_dialog,
     },
     Specimen {
         name: "Tooltip",
@@ -48,6 +56,7 @@ pub(super) struct State {
     delete_open: bool,
     publish_open: bool,
     answer: Option<String>,
+    error: Option<mcsapi_ui::Error>,
 }
 
 impl Default for State {
@@ -58,6 +67,7 @@ impl Default for State {
             delete_open: false,
             publish_open: false,
             answer: None,
+            error: None,
         }
     }
 }
@@ -88,6 +98,23 @@ fn dialog(ui: &mut Ui, state: &mut super::State) {
         state.profile_open = false;
         toast(&ctx, "Profile saved", Some(state.name.clone()));
     }
+}
+
+fn error_dialog(ui: &mut Ui, state: &mut super::State) {
+    let state = &mut state.overlays;
+    row(ui, "Full report", |ui| {
+        if ui
+            .add(Button::new("Apply theme").variant(ButtonVariant::Outline))
+            .clicked()
+        {
+            state.error = Some(crate::sample_error());
+        }
+    });
+    let docs = crate::sample_docs();
+    let ctx = ui.ctx().clone();
+    ErrorDialog::new("gallery-error", &mut state.error)
+        .docs(&docs)
+        .show(&ctx);
 }
 
 fn alert_dialog(ui: &mut Ui, state: &mut super::State) {

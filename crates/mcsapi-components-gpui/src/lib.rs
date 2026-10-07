@@ -78,7 +78,7 @@ pub use navigation::{
 };
 #[cfg(feature = "gpui")]
 pub use overlays::{
-    AlertDialog, AlertDialogAction, Dialog, Toast, Toaster, toast, toasts, tooltip,
+    AlertDialog, AlertDialogAction, Dialog, ErrorDialog, Toast, Toaster, toast, toasts, tooltip,
 };
 /// Zed's theme types, with [`theme::theme_from_mcsapi`] building them from an
 /// mcsapi theme.

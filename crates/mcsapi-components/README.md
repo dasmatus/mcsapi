@@ -70,6 +70,7 @@ are reimplementations in Rust and egui, not copies of the React source.
 | Component | Rust API | What it is |
 | --- | --- | --- |
 | Error alert | `ErrorAlert` | An `mcsapi_ui::Error` (a miette report) as a destructive alert: message, causes, help, code, and "Learn more" into the documentation section the error names, offline copy first (`mcsapi_ui::error`). |
+| Error dialog | `ErrorDialog` | The same error as an alert dialog: a modal with the message as its title, "Copy details", "Learn more" and "OK"; it shows while the app holds an error and "OK" or Escape clears it. |
 
 ## Not ported yet (shadcn/ui)
 

@@ -308,6 +308,140 @@ impl RenderOnce for AlertDialog {
     }
 }
 
+/// An [`mcsapi_ui::Error`] as an alert dialog: the message as the title in
+/// the destructive color (the accent for a warning), each cause, miette's
+/// help and the code under it, and "Copy details", "Learn more" (when the
+/// error names a section and there is documentation) and "OK". The GPUI twin
+/// of `mcsapi_components::ErrorDialog`. "OK", Escape and the backdrop call
+/// [`ErrorDialog::on_close`], where the app drops the error. It copies what
+/// it draws, so `error` need not outlive the frame.
+#[derive(IntoElement)]
+#[must_use = "add it as a child"]
+pub struct ErrorDialog {
+    title: SharedString,
+    lines: Vec<SharedString>,
+    code: Option<SharedString>,
+    warning: bool,
+    details: SharedString,
+    doc: Option<mcsapi_ui::DocLink>,
+    docs: mcsapi_ui::Docs,
+    address_only: bool,
+    on_close: Option<Handler<()>>,
+}
+
+impl ErrorDialog {
+    /// A dialog for `error`, with "Learn more" reading
+    /// [`mcsapi_ui::Docs::from_env`].
+    pub fn new(error: &mcsapi_ui::Error) -> Self {
+        Self {
+            title: error.to_string().into(),
+            lines: error
+                .causes()
+                .map(|cause| format!("• {cause}").into())
+                .chain(error.help().map(Into::into))
+                .collect(),
+            code: error.code().map(Into::into),
+            warning: error.is_warning(),
+            details: error.details().into(),
+            doc: error.doc().cloned(),
+            docs: mcsapi_ui::Docs::from_env(),
+            address_only: false,
+            on_close: None,
+        }
+    }
+
+    /// Where "Learn more" looks for the documentation, instead of the
+    /// environment.
+    pub fn docs(mut self, docs: mcsapi_ui::Docs) -> Self {
+        self.docs = docs;
+        self
+    }
+
+    /// Shows the section's address on the published site instead of "Learn
+    /// more", for a screen with no browser to open it in.
+    pub fn address_only(mut self, address_only: bool) -> Self {
+        self.address_only = address_only;
+        self
+    }
+
+    /// Calls `handler` when the person closes the dialog. It takes `&()`, as
+    /// `ErrorAlert::on_dismiss` does, so `cx.listener` fits.
+    pub fn on_close(mut self, handler: impl Fn(&(), &mut Window, &mut App) + 'static) -> Self {
+        self.on_close = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for ErrorDialog {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let t = Tokens::get(cx);
+        let tone = if self.warning {
+            t.primary
+        } else {
+            t.destructive
+        };
+        let handler = self.on_close.unwrap_or_else(|| Rc::new(|_, _, _| {}));
+        let on_close: Callback = Rc::new(move |window, cx| handler(&(), window, cx));
+        let address = self
+            .doc
+            .as_ref()
+            .filter(|_| self.address_only)
+            .and_then(|link| self.docs.online_url(link));
+        let muted = |text: SharedString| {
+            div()
+                .text_size(px(14.0))
+                .text_color(t.muted_foreground)
+                .child(text)
+        };
+        let mut buttons = div().flex().justify_end().gap(px(8.0)).mt(px(16.0));
+        let details = self.details;
+        buttons = buttons.child(
+            Button::new("Copy details")
+                .id("error-dialog-copy")
+                .variant(ButtonVariant::Ghost)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(details.to_string()));
+                }),
+        );
+        let openable = !self.docs.is_empty() && !self.address_only;
+        if let Some(link) = self.doc.filter(|_| openable) {
+            let docs = self.docs;
+            buttons = buttons.child(
+                Button::new("Learn more")
+                    .id("error-dialog-learn-more")
+                    .variant(ButtonVariant::Outline)
+                    .on_click(move |_, _, _| {
+                        if let Err(error) = docs.open(&link) {
+                            tracing::warn!(%link, %error, "could not open the documentation");
+                        }
+                    }),
+            );
+        }
+        let ok = on_close.clone();
+        buttons = buttons.child(
+            Button::new("OK")
+                .id("error-dialog-ok")
+                .on_click(move |_, window, cx| ok(window, cx)),
+        );
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .text_size(px(18.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(tone)
+                    .child(self.title),
+            )
+            .children(self.lines.into_iter().map(muted))
+            .children(self.code.map(|code| muted(code).font_family("monospace")))
+            .children(address.map(|address| muted(format!("More at {address}").into())))
+            .child(buttons);
+        dialog_layer(window, &t, 420.0, on_close, content)
+    }
+}
+
 /// Wraps `child` so Zed's [`ui::Tooltip`] with `text` shows while it is
 /// hovered. `id` must be unique among its siblings.
 pub fn tooltip(

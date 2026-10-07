@@ -4,7 +4,7 @@ use egui::{Align2, Context, Frame, Id, Margin, Modal, Order, Response, RichText,
 
 use crate::{Button, ButtonVariant, Tokens};
 
-fn dialog_frame(tokens: &Tokens) -> Frame {
+pub(crate) fn dialog_frame(tokens: &Tokens) -> Frame {
     Frame::new()
         .fill(tokens.background)
         .stroke(tokens.border_stroke())

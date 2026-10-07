@@ -58,7 +58,7 @@ pub use display::{
     Alert, AlertVariant, AspectRatio, Avatar, Card, Empty, Label, Progress, Separator, Skeleton,
     Spinner, blockquote, typography,
 };
-pub use error::{ErrorAlert, ErrorAlertResponse};
+pub use error::{ErrorAlert, ErrorAlertResponse, ErrorDialog, ErrorDialogResponse};
 pub use form::{Checkbox, Input, RadioGroup, Select, Slider, Switch, Textarea};
 pub use navigation::{
     Collapsible, Pagination, Table, Tabs, accordion_item, breadcrumb, page_window,
