@@ -615,8 +615,15 @@ pub struct EguiBridge {
 }
 
 impl EguiBridge {
-    /// The egui events for one gesture event.
-    pub fn events(&mut self, event: GestureEvent, modifiers: Modifiers) -> Vec<Event> {
+    /// The egui events for one gesture event, in order.
+    ///
+    /// The bridge's state moves on when this is called, not when the events
+    /// are read, so dropping them unread loses only those events.
+    pub fn events(
+        &mut self,
+        event: GestureEvent,
+        modifiers: Modifiers,
+    ) -> impl Iterator<Item = Event> + use<> {
         let wheel = |delta: Vec2, phase| Event::MouseWheel {
             unit: MouseWheelUnit::Point,
             delta,
@@ -633,39 +640,40 @@ impl EguiBridge {
                 },
             )
         };
-        match event {
+        // At most a pan, a zoom and a rotation, so a fixed array holds them
+        // without allocating.
+        let events = match event {
             GestureEvent::SwipeBegin { .. }
             | GestureEvent::PinchBegin { .. }
             | GestureEvent::HoldBegin { .. } => {
                 self.pinch_scale = 1.0;
-                vec![wheel(Vec2::ZERO, TouchPhase::Start)]
+                [Some(wheel(Vec2::ZERO, TouchPhase::Start)), None, None]
             }
-            GestureEvent::SwipeUpdate { delta } => vec![wheel(delta, TouchPhase::Move)],
+            GestureEvent::SwipeUpdate { delta } => {
+                [Some(wheel(delta, TouchPhase::Move)), None, None]
+            }
             GestureEvent::PinchUpdate {
                 delta,
                 scale,
                 rotation,
             } => {
-                let mut events = Vec::with_capacity(3);
-                if delta != Vec2::ZERO {
-                    events.push(wheel(delta, TouchPhase::Move));
-                }
+                let pan = (delta != Vec2::ZERO).then(|| wheel(delta, TouchPhase::Move));
+                let mut zoom = None;
                 if scale > 0.0 && scale.is_finite() && self.pinch_scale > 0.0 {
                     let factor = scale / self.pinch_scale;
                     self.pinch_scale = scale;
                     if factor != 1.0 {
-                        events.push(Event::Zoom(factor));
+                        zoom = Some(Event::Zoom(factor));
                     }
                 }
-                if rotation != 0.0 {
-                    events.push(Event::Rotate(rotation));
-                }
-                events
+                let rotate = (rotation != 0.0).then_some(Event::Rotate(rotation));
+                [pan, zoom, rotate]
             }
             GestureEvent::SwipeEnd { cancelled } | GestureEvent::PinchEnd { cancelled } => {
-                vec![end(cancelled)]
+                [Some(end(cancelled)), None, None]
             }
-            GestureEvent::HoldEnd { .. } => vec![end(true)],
-        }
+            GestureEvent::HoldEnd { .. } => [Some(end(true)), None, None],
+        };
+        events.into_iter().flatten()
     }
 }

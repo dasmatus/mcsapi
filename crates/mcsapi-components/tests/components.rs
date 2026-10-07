@@ -226,13 +226,14 @@ fn clicking_the_slider_end_sets_the_maximum() {
 
 #[test]
 fn page_window_elides_distant_pages() {
-    assert_eq!(page_window(0, 3), vec![Some(0), Some(1), Some(2)]);
+    let pages = |current, total| page_window(current, total).collect::<Vec<_>>();
+    assert_eq!(pages(0, 3), vec![Some(0), Some(1), Some(2)]);
     assert_eq!(
-        page_window(5, 20),
+        pages(5, 20),
         vec![Some(0), None, Some(4), Some(5), Some(6), None, Some(19)]
     );
-    assert_eq!(page_window(0, 20), vec![Some(0), Some(1), None, Some(19)]);
-    assert_eq!(page_window(19, 20), vec![Some(0), None, Some(18), Some(19)]);
+    assert_eq!(pages(0, 20), vec![Some(0), Some(1), None, Some(19)]);
+    assert_eq!(pages(19, 20), vec![Some(0), None, Some(18), Some(19)]);
 }
 
 #[test]

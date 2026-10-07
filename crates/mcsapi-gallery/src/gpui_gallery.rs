@@ -1329,7 +1329,6 @@ fn pagination(
     cx: &mut Context<GalleryView>,
 ) -> Div {
     let window: Vec<String> = page_window(view.long, 20)
-        .into_iter()
         .map(|page| page.map_or("…".to_owned(), |page| (page + 1).to_string()))
         .collect();
     rows([

@@ -154,22 +154,28 @@ pub fn breadcrumb<T: AsRef<str>>(ui: &mut Ui, items: &[T]) -> InnerResponse<Opti
 /// Page numbers to show for `current` of `total` pages, with `None` as an ellipsis.
 ///
 /// Always shows the first and last page and one neighbor either side of `current`.
-pub fn page_window(current: usize, total: usize) -> Vec<Option<usize>> {
-    if total <= 7 {
-        return (0..total).map(Some).collect();
-    }
-    let mut pages = vec![Some(0)];
-    let low = current.saturating_sub(1).max(1);
-    let high = (current + 1).min(total - 2);
-    if low > 1 {
-        pages.push(None);
-    }
-    pages.extend((low..=high).map(Some));
-    if high < total - 2 {
-        pages.push(None);
-    }
-    pages.push(Some(total - 1));
-    pages
+pub fn page_window(current: usize, total: usize) -> impl Iterator<Item = Option<usize>> {
+    // Up to seven pages fit without an ellipsis, so they all show.
+    let elided = total > 7;
+    // The pages between the ends, half-open; every page when nothing is elided.
+    let (low, high) = if elided {
+        (
+            current.saturating_sub(1).max(1),
+            (current + 1).min(total - 2) + 1,
+        )
+    } else {
+        (0, total)
+    };
+    let first = elided.then_some(Some(0));
+    let gap_before = (elided && low > 1).then_some(None);
+    let gap_after = (elided && high < total - 1).then_some(None);
+    let last = elided.then(|| Some(total - 1));
+    first
+        .into_iter()
+        .chain(gap_before)
+        .chain((low..high).map(Some))
+        .chain(gap_after)
+        .chain(last)
 }
 
 /// shadcn's Pagination: previous, page numbers, and next.
