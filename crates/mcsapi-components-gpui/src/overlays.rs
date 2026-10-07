@@ -313,7 +313,7 @@ impl RenderOnce for AlertDialog {
 }
 
 /// A dialog in a window of its own: a native, modal child of the active
-/// window ([`WindowKind::Dialog`], so `xdg_dialog_v1` on Wayland and a
+/// window (`gpui::WindowKind::Dialog`, so `xdg_dialog_v1` on Wayland and a
 /// transient dialog on X11), titled `title` by the window system and
 /// centered on the display. The window system keeps it over its parent and
 /// the parent takes no input until it closes.
