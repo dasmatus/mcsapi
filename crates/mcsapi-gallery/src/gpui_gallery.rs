@@ -233,8 +233,13 @@ impl GalleryView {
             .flex_col()
             .flex_none()
             .overflow_y_scroll()
-            .w(px(200.0))
-            .pr(px(16.0))
+            .w(px(220.0))
+            // A sunken, bordered panel, like the web interface's sidebar.
+            .p(px(8.0))
+            .bg(t.field)
+            .border_1()
+            .border_color(t.border)
+            .rounded(t.card_radius())
             .gap(px(2.0))
             .child(Input::new(&self.search))
             .child(div().h(px(8.0)))
@@ -261,7 +266,7 @@ impl GalleryView {
                     .pb(px(4.0))
                     .text_size(px(12.0))
                     .text_color(t.muted_foreground)
-                    .child(category.name().to_uppercase()),
+                    .child(category.name()),
             );
             for specimen in items {
                 let name = specimen.name;
@@ -295,7 +300,8 @@ impl GalleryView {
             .flex()
             .flex_col()
             .gap(px(4.0))
-            .p(px(20.0))
+            .p(px(16.0))
+            .bg(t.card)
             .border_1()
             .border_color(t.border)
             .rounded(t.card_radius())
@@ -306,8 +312,8 @@ impl GalleryView {
                     .gap(px(8.0))
                     .child(
                         div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(16.0))
+                            .font_weight(FontWeight::MEDIUM)
                             .child(specimen.name),
                     )
                     .child(Badge::new(specimen.source).variant(BadgeVariant::Outline)),
@@ -332,21 +338,28 @@ fn nav_button(
     tokens: &Tokens,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    // The selected entry is a solid accent pill with a chevron, as in the
+    // web interface's navigation tree.
     let hover = tokens.hover;
     div()
         .id(text)
         .flex_none()
         .w_full()
         .h(px(32.0))
-        .px(px(12.0))
+        .px(px(10.0))
         .flex()
         .items_center()
+        .justify_between()
         .rounded(tokens.radius)
         .cursor_pointer()
         .text_color(tokens.foreground)
-        .when(selected, |item| item.bg(tokens.secondary))
-        .hover(move |style| style.bg(hover))
+        .when(selected, |item| {
+            item.bg(tokens.primary)
+                .text_color(tokens.primary_foreground)
+        })
+        .when(!selected, |item| item.hover(move |style| style.bg(hover)))
         .child(text)
+        .when(selected, |item| item.child("›"))
         .on_click(on_click)
 }
 
@@ -359,23 +372,27 @@ impl Render for GalleryView {
             None => specimens().filter(|s| s.matches(&query)).collect(),
         };
         let names = PRESETS.map(|preset| preset.name);
+        // A top bar over the page, like the web interface's.
         let header = div()
             .flex()
+            .flex_none()
             .items_center()
             .gap(px(12.0))
-            .pb(px(12.0))
+            .px(px(16.0))
+            .py(px(10.0))
+            .bg(t.field)
             .border_b_1()
             .border_color(t.border)
             .child(
                 div()
-                    .text_size(px(20.0))
+                    .text_size(px(16.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("mcsapi widget gallery"),
             )
-            .child(typography::muted(
-                &t,
-                format!("{} widgets", specimens().count()),
-            ))
+            .child(
+                Badge::new(format!("{} widgets", specimens().count()))
+                    .variant(BadgeVariant::Outline),
+            )
             .child(div().flex_1())
             .child(typography::muted(&t, "Theme"))
             .child(
@@ -409,8 +426,6 @@ impl Render for GalleryView {
             .size_full()
             .flex()
             .flex_col()
-            .p(px(16.0))
-            .gap(px(12.0))
             .bg(t.background)
             .text_color(t.foreground)
             .text_size(px(14.0))
@@ -420,8 +435,9 @@ impl Render for GalleryView {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(sidebar.border_r_1().border_color(t.border))
-                    .child(div().w(px(16.0)))
+                    .p(px(16.0))
+                    .child(sidebar)
+                    .child(div().w(px(24.0)))
                     .child(content),
             )
             .child(Toaster)

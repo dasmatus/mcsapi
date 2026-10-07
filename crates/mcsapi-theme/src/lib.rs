@@ -90,7 +90,7 @@ pub struct Palette {
     pub surface: Color,
     /// Text.
     pub foreground: Color,
-    /// Borders of inactive controls.
+    /// Borders of cards, fields and inactive controls, drawn as chosen.
     pub border: Color,
     /// Highlight for active controls, the focused workspace and selections.
     pub accent: Color,
@@ -170,7 +170,7 @@ pub struct Theme {
     pub fonts: Fonts,
     /// Icon and cursor themes.
     pub icons: Icons,
-    /// Corner radius of controls in logical pixels; cards use twice this.
+    /// Corner radius of controls in logical pixels; cards use two more.
     pub radius: u8,
 }
 
@@ -184,7 +184,9 @@ impl Default for Theme {
 ///
 /// They are tuned for dark backgrounds; [`Theme::with_accent`] darkens them
 /// where a light theme needs it.
-pub const ACCENTS: [(&str, Color); 5] = [
+pub const ACCENTS: [(&str, Color); 6] = [
+    // The LosOS web interface's accent, and the default theme's.
+    ("teal", Color::rgb(72, 179, 192)),
     ("lime", Color::rgb(163, 230, 53)),
     ("sky", Color::rgb(56, 189, 248)),
     ("violet", Color::rgb(167, 139, 250)),
@@ -205,17 +207,22 @@ impl Theme {
     /// IDs of the themes built into this crate, for [`Theme::builtin`].
     pub const BUILTIN: [&str; 3] = ["derisk-dark", "derisk-light", "derisk-high-contrast"];
 
-    /// The default dark theme: slate surfaces and a lime accent.
+    /// The default dark theme, the LosOS web interface's colors: a
+    /// near-black navy page, slightly lighter cards with a low-contrast
+    /// border, slate text and a teal accent. Desktop and web look alike
+    /// because both start from these values.
     pub fn dark() -> Self {
         Self {
             name: "Derisk Dark".to_owned(),
             scheme: Scheme::Dark,
             palette: Palette {
-                background: Color::rgb(15, 23, 42),
-                surface: Color::rgb(30, 41, 59),
-                foreground: Color::rgb(248, 250, 252),
-                border: Color::rgb(100, 116, 139),
-                accent: Color::rgb(163, 230, 53),
+                background: Color::rgb(10, 14, 18),
+                // Chosen so cards, half way to it, land on the web
+                // interface's #141b22.
+                surface: Color::rgb(30, 40, 50),
+                foreground: Color::rgb(226, 232, 240),
+                border: Color::rgb(33, 44, 54),
+                accent: Color::rgb(72, 179, 192),
                 destructive: Color::rgb(220, 38, 38),
             },
             fonts: Fonts::default(),
@@ -233,8 +240,10 @@ impl Theme {
                 background: Color::rgb(248, 250, 252),
                 surface: Color::rgb(226, 232, 240),
                 foreground: Color::rgb(15, 23, 42),
-                border: Color::rgb(148, 163, 184),
-                accent: Color::rgb(163, 230, 53),
+                // The border the old derivation drew, half way from the
+                // surface to slate-400, now that borders are drawn as chosen.
+                border: Color::rgb(187, 198, 212),
+                accent: Color::rgb(72, 179, 192),
                 destructive: Color::rgb(220, 38, 38),
             },
             // Papirus's variant drawn for light backgrounds.
@@ -244,7 +253,7 @@ impl Theme {
             },
             ..Self::dark()
         }
-        .with_accent(Color::rgb(163, 230, 53))
+        .with_accent(Color::rgb(72, 179, 192))
     }
 
     /// Black and white with a yellow accent, for low vision.
@@ -337,7 +346,10 @@ pub struct Tokens {
     pub overlay: Color,
     /// Text selection: the primary color, translucent.
     pub selection: Color,
-    /// Corner radius of controls in logical pixels; cards use twice this.
+    /// Fill of text fields, switch tracks that are off and sunken panels
+    /// such as a sidebar: a step down from the card toward the page.
+    pub field: Color,
+    /// Corner radius of controls in logical pixels; cards use two more.
     pub radius: u8,
 }
 
@@ -350,22 +362,26 @@ impl Tokens {
         } else {
             Color::rgb(254, 242, 242)
         };
+        let card = p.background.mix(p.surface, 0.5);
         Self {
             background: p.background,
             foreground: p.foreground,
-            card: p.background.mix(p.surface, 0.5),
+            card,
             muted: p.surface,
-            muted_foreground: p.foreground.mix(p.border, 0.55),
+            // Toward the surface rather than the border: borders are drawn as
+            // chosen and are often faint, which would make this unreadable.
+            muted_foreground: p.foreground.mix(p.surface, 0.4),
             primary: p.accent,
             primary_foreground: p.background,
             secondary: p.surface,
             hover: p.surface.mix(p.border, 0.35),
             destructive: p.destructive,
             destructive_foreground,
-            border: p.surface.mix(p.border, 0.5),
+            border: p.border,
             ring: p.accent,
             overlay: Color::black_alpha(160),
             selection: p.accent.with_alpha(0x55),
+            field: p.background.mix(card, 0.6),
             radius,
         }
     }

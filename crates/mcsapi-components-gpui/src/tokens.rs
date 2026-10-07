@@ -35,7 +35,9 @@ pub struct Tokens {
     pub ring: Hsla,
     /// Backdrop behind dialogs.
     pub overlay: Hsla,
-    /// Corner radius of controls; cards use twice this.
+    /// Fill of text fields, switch tracks that are off and sunken panels.
+    pub field: Hsla,
+    /// Corner radius of controls; cards use two more.
     pub radius: Pixels,
 }
 
@@ -103,6 +105,7 @@ impl Tokens {
             border: color(self.border),
             ring: color(self.ring),
             overlay: color(self.overlay),
+            field: color(self.field),
             // GPUI tokens do not carry the selection color; the engine derives
             // it from the accent the same way.
             selection: color(self.primary).with_alpha(0x55),
@@ -117,9 +120,10 @@ impl Tokens {
             .unwrap_or_else(|| Self::from_theme(&Theme::default()))
     }
 
-    /// Corner radius of cards, dialogs, and alerts.
+    /// Corner radius of cards, dialogs, and alerts: two more than controls,
+    /// like the web interface's 6 px controls in 8 px cards.
     pub fn card_radius(&self) -> Pixels {
-        self.radius * 2.0
+        self.radius + px(2.0)
     }
 }
 
@@ -140,6 +144,7 @@ impl From<mcsapi_ui::theme::Tokens> for Tokens {
             border: hsla(t.border),
             ring: hsla(t.ring),
             overlay: hsla(t.overlay),
+            field: hsla(t.field),
             radius: px(f32::from(t.radius)),
         }
     }

@@ -39,7 +39,9 @@ pub struct Tokens {
     pub ring: Color32,
     /// Backdrop behind dialogs.
     pub overlay: Color32,
-    /// Corner radius of controls; cards use twice this.
+    /// Fill of text fields, switch tracks that are off and sunken panels.
+    pub field: Color32,
+    /// Corner radius of controls; cards use two more.
     pub radius: u8,
 }
 
@@ -75,9 +77,10 @@ impl Tokens {
         CornerRadius::same(self.radius)
     }
 
-    /// Corner radius of cards, dialogs, and alerts.
+    /// Corner radius of cards, dialogs, and alerts: two more than controls,
+    /// like the web interface's 6 px controls in 8 px cards.
     pub fn card_radius(&self) -> CornerRadius {
-        CornerRadius::same(self.radius.saturating_mul(2))
+        CornerRadius::same(self.radius.saturating_add(2))
     }
 
     /// One-pixel border stroke.
@@ -125,6 +128,7 @@ impl From<mcsapi_ui::theme::Tokens> for Tokens {
             border: c(t.border),
             ring: c(t.ring),
             overlay: c(t.overlay),
+            field: c(t.field),
             radius: t.radius,
         }
     }

@@ -12,13 +12,13 @@ fn lime_theme() -> Theme {
 fn every_target_uses_the_shell_theme() {
     let style = Style::default();
     let p = style.palette();
-    // Default shell background is rgb(15, 23, 42).
-    assert_eq!(p.background.to_string(), "#0f172a");
-    assert!(x2mcsapi::web_css(&style).contains("--x2mcsapi-background: #0f172a;"));
+    // Default shell background is rgb(10, 14, 18).
+    assert_eq!(p.background.to_string(), "#0a0e12");
+    assert!(x2mcsapi::web_css(&style).contains("--x2mcsapi-background: #0a0e12;"));
     assert!(
-        x2mcsapi::gtk_css(&style).contains("@define-color window_bg_color rgba(15, 23, 42, 1);")
+        x2mcsapi::gtk_css(&style).contains("@define-color window_bg_color rgba(10, 14, 18, 1);")
     );
-    assert!(x2mcsapi::qt_stylesheet(&style).contains("background-color: rgba(15, 23, 42, 1);"));
+    assert!(x2mcsapi::qt_stylesheet(&style).contains("background-color: rgba(10, 14, 18, 1);"));
 }
 
 #[test]
@@ -42,8 +42,8 @@ fn style_is_read_from_the_components() {
     assert_eq!((g.control_height, g.control_padding_x), (36.0, 16.0));
     assert_eq!((g.small_control_height, g.small_padding_x), (32.0, 12.0));
     assert_eq!((g.input_padding_x, g.input_padding_y), (12.0, 8.0));
-    assert_eq!(g.card_padding, 24.0);
-    assert_eq!((g.control_radius, g.card_radius), (6.0, 12.0));
+    assert_eq!(g.card_padding, 16.0);
+    assert_eq!((g.control_radius, g.card_radius), (6.0, 8.0));
     assert_eq!((g.border_width, g.ring_width), (1.0, 2.0));
     // egui's embedded Ubuntu-Light and Hack, as installed family names.
     assert_eq!(style.fonts.proportional[0], "Ubuntu");
@@ -60,7 +60,7 @@ fn a_token_change_reaches_every_target() {
         radius: 9,
         ..Tokens::default()
     });
-    assert_eq!(style.geometry.card_radius, 18.0);
+    assert_eq!(style.geometry.card_radius, 11.0);
     assert!(x2mcsapi::web_css(&style).contains("--x2mcsapi-radius: 9px;"));
     assert!(x2mcsapi::gtk_css(&style).contains("border-radius: 9px;"));
     assert!(x2mcsapi::qt_stylesheet(&style).contains("border-radius: 9px;"));
