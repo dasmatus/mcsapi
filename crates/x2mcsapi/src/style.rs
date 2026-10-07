@@ -255,16 +255,15 @@ impl Fonts {
         style: &egui::Style,
         tokens: &Tokens,
     ) -> Self {
-        let faces = |family: &FontFamily| -> Vec<(String, Option<u16>)> {
+        let faces = |family: &FontFamily| {
             definitions
                 .families
                 .get(family)
                 .into_iter()
                 .flatten()
                 .map(|name| font_face(name))
-                .collect()
         };
-        let names = |faces: Vec<(String, Option<u16>)>, generic: &str| {
+        fn names(faces: impl Iterator<Item = (String, Option<u16>)>, generic: &str) -> Vec<String> {
             let mut names: Vec<String> = Vec::new();
             for (name, _) in faces {
                 if !names.contains(&name) {
@@ -273,11 +272,11 @@ impl Fonts {
             }
             names.push(generic.to_owned());
             names
-        };
+        }
         let body = tokens.body_font();
-        let proportional = faces(&body.family);
+        let mut proportional = faces(&body.family).peekable();
         let weight = proportional
-            .first()
+            .peek()
             .and_then(|(_, weight)| *weight)
             .unwrap_or(400);
         Self {

@@ -113,7 +113,6 @@ fn pagination(ui: &mut Ui, state: &mut super::State) {
         ui.vertical(|ui| {
             ui.add(Pagination::new(&mut state.long, 20));
             let window: Vec<String> = page_window(state.long, 20)
-                .into_iter()
                 .map(|page| page.map_or("…".to_owned(), |page| (page + 1).to_string()))
                 .collect();
             ui.label(typography::muted(

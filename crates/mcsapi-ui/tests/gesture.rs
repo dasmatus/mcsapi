@@ -291,7 +291,9 @@ fn egui_apps_follow_bridged_gestures_and_coast() {
         vec![egui::Event::PointerMoved(pointer)],
     );
     let mut time = 0.0;
-    let mut events = bridge.events(GestureEvent::PinchBegin { fingers: 2 }, mods);
+    let mut events: Vec<_> = bridge
+        .events(GestureEvent::PinchBegin { fingers: 2 }, mods)
+        .collect();
     for i in 1..=8 {
         time += FRAME;
         events.extend(bridge.events(
@@ -309,7 +311,9 @@ fn egui_apps_follow_bridged_gestures_and_coast() {
     assert!(matches!(tracker.phase(), GesturePhase::Tracking { .. }));
 
     time += FRAME;
-    let end = bridge.events(GestureEvent::PinchEnd { cancelled: false }, mods);
+    let end = bridge
+        .events(GestureEvent::PinchEnd { cancelled: false }, mods)
+        .collect();
     frame(&ctx, &mut tracker, time, end);
     assert_eq!(tracker.phase(), GesturePhase::Coasting);
     let released = tracker.transform();
@@ -343,31 +347,38 @@ fn egui_gestures_outside_the_area_are_ignored() {
 fn bridge_marks_gesture_boundaries_and_relative_zoom() {
     let mut bridge = EguiBridge::default();
     let mods = Modifiers::NONE;
-    let phase = |events: &[egui::Event]| match events {
-        [egui::Event::MouseWheel { phase, .. }, ..] => Some(*phase),
+    let phase = |first: Option<egui::Event>| match first {
+        Some(egui::Event::MouseWheel { phase, .. }) => Some(phase),
         _ => None,
     };
     assert_eq!(
-        phase(&bridge.events(GestureEvent::HoldBegin { fingers: 3 }, mods)),
+        phase(
+            bridge
+                .events(GestureEvent::HoldBegin { fingers: 3 }, mods)
+                .next()
+        ),
         Some(egui::TouchPhase::Start)
     );
     assert_eq!(
-        phase(&bridge.events(GestureEvent::HoldEnd { cancelled: false }, mods)),
+        phase(
+            bridge
+                .events(GestureEvent::HoldEnd { cancelled: false }, mods)
+                .next()
+        ),
         Some(egui::TouchPhase::Cancel),
         "resting fingers never start momentum"
     );
-    bridge.events(GestureEvent::PinchBegin { fingers: 2 }, mods);
-    let zoom = |events: Vec<egui::Event>| {
-        events.into_iter().find_map(|e| match e {
-            egui::Event::Zoom(z) => Some(z),
-            _ => None,
-        })
+    // Only the bridge's state matters here; it moves on without the events.
+    let _ = bridge.events(GestureEvent::PinchBegin { fingers: 2 }, mods);
+    let zoom = |event| match event {
+        egui::Event::Zoom(z) => Some(z),
+        _ => None,
     };
     let update = |scale| GestureEvent::PinchUpdate {
         delta: Vec2::ZERO,
         scale,
         rotation: 0.0,
     };
-    assert_eq!(zoom(bridge.events(update(2.0), mods)), Some(2.0));
-    assert_eq!(zoom(bridge.events(update(3.0), mods)), Some(1.5));
+    assert_eq!(bridge.events(update(2.0), mods).find_map(zoom), Some(2.0));
+    assert_eq!(bridge.events(update(3.0), mods).find_map(zoom), Some(1.5));
 }

@@ -170,7 +170,6 @@ impl RenderOnce for Pagination {
             }
         };
         let numbers = page_window(page, total)
-            .into_iter()
             .enumerate()
             .map(|(slot, entry)| match entry {
                 Some(number) => Button::new((number + 1).to_string())
