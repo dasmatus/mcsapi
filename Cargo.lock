@@ -4019,6 +4019,7 @@ dependencies = [
  "mcsapi-zed-icons",
  "mcsapi-zed-theme",
  "mcsapi-zed-ui",
+ "tracing",
  "unicode-segmentation",
 ]
 
@@ -4100,6 +4101,8 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "mcsapi",
+ "miette",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

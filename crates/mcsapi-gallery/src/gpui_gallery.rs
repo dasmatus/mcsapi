@@ -12,10 +12,10 @@ use gpui::{
 use mcsapi::{Desktop, WindowId, WorkspaceId, widgets::gpui_workspace_bar};
 use mcsapi_components_gpui::{
     Alert, AlertDialog, AlertDialogAction, AlertVariant, AspectRatio, Avatar, Badge, BadgeVariant,
-    Button, ButtonSize, ButtonVariant, Card, Checkbox, Collapsible, Dialog, Empty, Input, Kbd,
-    Label, Pagination, Progress, RadioGroup, Select, Separator, Skeleton, Slider, Spinner, Switch,
-    Table, Tabs, TextInput, Textarea, Toaster, Toggle, ToggleGroup, Tokens, accordion_item,
-    blockquote, breadcrumb, page_window, toast, toasts, tooltip, typography,
+    Button, ButtonSize, ButtonVariant, Card, Checkbox, Collapsible, Dialog, Empty, ErrorAlert,
+    Input, Kbd, Label, Pagination, Progress, RadioGroup, Select, Separator, Skeleton, Slider,
+    Spinner, Switch, Table, Tabs, TextInput, Textarea, Toaster, Toggle, ToggleGroup, Tokens,
+    accordion_item, blockquote, breadcrumb, page_window, toast, toasts, tooltip, typography,
 };
 use mcsapi_ui::Theme;
 
@@ -40,6 +40,7 @@ pub(crate) const RENDERERS: &[(&str, Renderer)] = &[
     ("Select", select),
     ("Card", card),
     ("Alert", alert),
+    ("Error Alert", error_alert),
     ("Avatar", avatar),
     ("Separator", separator),
     ("Progress", progress),
@@ -974,6 +975,34 @@ fn alert(_: &mut GalleryView, t: &Tokens, _: &mut Window, _: &mut Context<Galler
             )],
         ),
         row(t, "Title only", [sized(Alert::new("Saved."))]),
+    ])
+}
+
+fn error_alert(
+    _: &mut GalleryView,
+    t: &Tokens,
+    _: &mut Window,
+    _: &mut Context<GalleryView>,
+) -> Div {
+    let sized = |alert: ErrorAlert| any(div().w(px(480.0)).child(alert));
+    rows([
+        row(
+            t,
+            "Full report",
+            [sized(
+                ErrorAlert::new(&crate::sample_error())
+                    .docs(crate::sample_docs())
+                    .on_dismiss(|_, _, _| {}),
+            )],
+        ),
+        row(
+            t,
+            "Message only",
+            [sized(
+                ErrorAlert::new(&mcsapi_ui::Error::msg("Not saved: no config directory"))
+                    .docs(crate::sample_docs()),
+            )],
+        ),
     ])
 }
 

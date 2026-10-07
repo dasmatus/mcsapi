@@ -16,6 +16,7 @@ mcsapi-zed-icons = { workspace = true, optional = true }
 mcsapi-zed-theme = { workspace = true, optional = true }
 mcsapi-zed-ui = { workspace = true, optional = true }
 unicode-segmentation = { version = "1", optional = true }
+tracing = { workspace = true, optional = true }
 
 [features]
 # Everything in this crate needs GPUI, which needs Wayland and Vulkan system
@@ -27,6 +28,7 @@ gpui = [
     "dep:mcsapi-zed-theme",
     "dep:mcsapi-zed-ui",
     "dep:unicode-segmentation",
+    "dep:tracing",
     "mcsapi-ui/gpui",
     "mcsapi-zed-theme/gpui",
     "mcsapi-zed-ui/gpui",

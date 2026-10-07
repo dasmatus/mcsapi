@@ -619,3 +619,121 @@ pub fn blockquote(tokens: &Tokens, content: impl IntoElement) -> Div {
         .pl(px(24.0))
         .child(content)
 }
+
+/// An [`mcsapi_ui::Error`] as an error callout: the message, each cause and
+/// miette's help under it, and buttons to open the documentation section the
+/// error names, copy the whole report, and dismiss it. The GPUI twin of
+/// `mcsapi_components::ErrorAlert`, drawn by Zed's [`ui::Callout`] like
+/// [`Alert`], so it follows the theme the same way.
+#[derive(IntoElement)]
+#[must_use = "add it as a child"]
+pub struct ErrorAlert {
+    id: SharedString,
+    title: SharedString,
+    description: Option<SharedString>,
+    warning: bool,
+    details: SharedString,
+    doc: Option<mcsapi_ui::DocLink>,
+    docs: mcsapi_ui::Docs,
+    on_dismiss: Option<crate::Handler<()>>,
+}
+
+impl ErrorAlert {
+    /// A callout for `error`, with "Learn more" reading
+    /// [`mcsapi_ui::Docs::from_env`]. It copies what it draws, so `error`
+    /// need not outlive the frame.
+    pub fn new(error: &mcsapi_ui::Error) -> Self {
+        let title: SharedString = error.to_string().into();
+        let lines: Vec<String> = error
+            .causes()
+            .map(|cause| format!("• {cause}"))
+            .chain(error.help())
+            .chain(error.code())
+            .collect();
+        Self {
+            id: title.clone(),
+            title,
+            description: (!lines.is_empty()).then(|| lines.join("\n").into()),
+            warning: error.is_warning(),
+            details: error.details().into(),
+            doc: error.doc().cloned(),
+            docs: mcsapi_ui::Docs::from_env(),
+            on_dismiss: None,
+        }
+    }
+
+    /// Sets the element ID, for two alerts with the same message.
+    pub fn id(mut self, id: impl Into<SharedString>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    /// Where "Learn more" looks for the documentation, instead of the
+    /// environment.
+    pub fn docs(mut self, docs: mcsapi_ui::Docs) -> Self {
+        self.docs = docs;
+        self
+    }
+
+    /// Offers a "Dismiss" button that calls `handler`.
+    pub fn on_dismiss(mut self, handler: impl Fn(&(), &mut Window, &mut App) + 'static) -> Self {
+        self.on_dismiss = Some(std::rc::Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for ErrorAlert {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        use crate::{Button, ButtonSize, ButtonVariant};
+
+        crate::tokens::ensure_installed(cx);
+        let severity = if self.warning {
+            Severity::Warning
+        } else {
+            Severity::Error
+        };
+        let id = self.id;
+        let mut actions = div().flex().flex_row().gap_1();
+        if let Some(link) = self.doc.filter(|_| !self.docs.is_empty()) {
+            let docs = self.docs;
+            actions = actions.child(
+                Button::new("Learn more")
+                    .id(SharedString::from(format!("{id}-learn-more")))
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .on_click(move |_, _, _| {
+                        if let Err(error) = docs.open(&link) {
+                            tracing::warn!(%link, %error, "could not open the documentation");
+                        }
+                    }),
+            );
+        }
+        let details = self.details;
+        actions = actions.child(
+            Button::new("Copy details")
+                .id(SharedString::from(format!("{id}-copy")))
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(details.to_string()));
+                }),
+        );
+        if let Some(handler) = self.on_dismiss {
+            actions = actions.child(
+                Button::new("Dismiss")
+                    .id(SharedString::from(format!("{id}-dismiss")))
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .on_click(move |_, window, cx| handler(&(), window, cx)),
+            );
+        }
+        let mut callout = ui::Callout::new()
+            .severity(severity)
+            .title(self.title)
+            .actions_slot(actions);
+        if let Some(description) = self.description {
+            callout = callout.description(description);
+        }
+        callout
+    }
+}

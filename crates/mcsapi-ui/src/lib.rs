@@ -8,6 +8,10 @@
 //! [`gesture`] adds 1:1 touchpad gestures: pan, pinch and rotate content that
 //! follows the fingers exactly and coasts when they lift.
 //!
+//! [`error`] is the [`Result`] apps report failures with: a miette report
+//! that knows which section of the desktop's documentation explains it, for
+//! `mcsapi-components`' `ErrorAlert` to draw with a "Learn more" button.
+//!
 //! ```
 //! use mcsapi_ui::{App, Theme, egui};
 //!
@@ -33,9 +37,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod error;
 pub mod gesture;
 
 pub use egui;
+pub use error::{Context, DocLink, Docs, Error, Result};
 pub use gesture::{GestureEvent, GestureTracker, Transform};
 pub use mcsapi::theme;
 pub use mcsapi::toolkit::{FallbackReason, GraphicsCapabilities, Toolkit};
