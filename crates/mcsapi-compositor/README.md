@@ -89,6 +89,13 @@ apps a pen moves the pointer, its tip and buttons click).
 `zwp_keyboard_shortcuts_inhibit_manager_v1` passes the shell's shortcuts to
 a focused client that asks, if `Shell::inhibit_shortcuts` allows it.
 
+Input methods: `zwp_input_method_manager_v2` (fcitx5, squeekboard) edits the
+focused `zwp_text_input_v3` field: it hears the field's surrounding text and
+content type, and its preedit, commits and deletions go back to the field.
+Its keyboard grab gets the seat's keys after the shell's shortcuts, and its
+candidate popup is drawn under the field's cursor, above everything but a
+session lock. One input method is connected at a time.
+
 Cursors: `wp_cursor_shape_manager_v1` and cursor surfaces. Named shapes, and
 the shapes egui asks for over the chrome and in-process apps, come from the
 XCursor theme in `XCURSOR_THEME` at `XCURSOR_SIZE`; the compositor paints its
@@ -137,9 +144,9 @@ leaves the session locked until another one unlocks it.
 
 Sandboxes: `wp_security_context_manager_v1` marks clients that connect
 through a socket a sandbox (Flatpak) opened. They do not see layer-shell,
-data control, the virtual keyboard or pointer, the session lock, the window
-lists and workspaces, screen capture, or the security context manager
-itself.
+data control, the virtual keyboard or pointer, input methods, the session
+lock, the window lists and workspaces, screen capture, or the security
+context manager itself.
 
 ## Try it
 

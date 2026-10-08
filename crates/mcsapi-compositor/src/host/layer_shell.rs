@@ -16,6 +16,7 @@
 //! clicked, as a runtime panel that takes the keyboard does. The shell's
 //! shortcuts still come first for both.
 //!
+//! An input method's popup (see `input_method`) is above all of them.
 //! While the session is locked (see `lock`) all of this gives way to the
 //! locker's surface.
 
@@ -60,6 +61,8 @@ impl LayerShell {
 
 /// What a layer client under the pointer is.
 enum Hit<'a> {
+    /// An input method's popup (see `input_method`).
+    InputPopup,
     /// A runtime panel or overlay.
     Runtime(&'a Layer),
     /// A layer-shell surface on this layer.
@@ -91,7 +94,10 @@ impl<S: Shell + 'static> Host<S> {
             self.wlr_under(layers)
                 .map(|(l, _, _)| Hit::Wlr(l.clone(), l.layer()))
         };
-        wlr(&[WlrLayer::Overlay])
+        let popup = self.input_method.surface_under(self.pointer);
+        popup
+            .map(|_| Hit::InputPopup)
+            .or_else(|| wlr(&[WlrLayer::Overlay]))
             .or_else(|| self.layer_under().map(Hit::Runtime))
             .or_else(|| wlr(&[WlrLayer::Top]))
             .or_else(|| wlr(&[WlrLayer::Bottom, WlrLayer::Background]))
@@ -105,6 +111,7 @@ impl<S: Shell + 'static> Host<S> {
         }
         let popup = || egui::Popup::is_any_open(&self.chrome.ctx);
         match self.layer_hit() {
+            Some(Hit::InputPopup) => true,
             Some(Hit::Runtime(layer)) if layer.role == Role::Overlay => true,
             Some(Hit::Wlr(_, WlrLayer::Overlay)) => true,
             Some(Hit::Runtime(_) | Hit::Wlr(_, WlrLayer::Top)) => !popup(),
@@ -130,6 +137,8 @@ impl<S: Shell + 'static> Host<S> {
                 window,
             }) => window.toplevel().map(|t| t.wl_surface().clone()),
             Hit::Runtime(_) => None,
+            // Picking a candidate leaves the keyboard on the field.
+            Hit::InputPopup => self.layer_focus.clone(),
             Hit::Wlr(layer, _) => layer
                 .can_receive_keyboard_focus()
                 .then(|| layer.wl_surface().clone()),
@@ -149,7 +158,9 @@ impl<S: Shell + 'static> Host<S> {
                 .surface_under(self.pointer - loc.to_f64(), WindowSurfaceType::ALL)
                 .map(|(surface, offset)| (surface, (offset + loc).to_f64()))
         };
-        wlr(&[WlrLayer::Overlay])
+        self.input_method
+            .surface_under(self.pointer)
+            .or_else(|| wlr(&[WlrLayer::Overlay]))
             .or_else(|| self.overlay().and_then(|_| space()))
             .or_else(|| wlr(&[WlrLayer::Top]))
             .or_else(space)

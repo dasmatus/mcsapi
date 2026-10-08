@@ -25,6 +25,7 @@ mod effects;
 mod foreign;
 mod hints;
 mod input;
+mod input_method;
 mod layer_shell;
 mod lock;
 mod security;
@@ -333,6 +334,7 @@ pub(crate) struct Host<S: Shell> {
     screen_capture: capture::Captures,
     workspaces: workspaces::Workspaces,
     automation: automation::Automation,
+    input_method: input_method::InputMethod,
     security: security::Security<S>,
     text_inputs: TextInputs,
     popups: PopupManager,
@@ -626,6 +628,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         foreign: foreign::Foreign::new::<S>(&dh),
         screen_capture: capture::Captures::new::<S>(&dh),
         workspaces: workspaces::Workspaces::new::<S>(&dh),
+        input_method: input_method::InputMethod::new::<S>(&dh),
         security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
             TextInputs::global::<S>(&dh);
@@ -834,7 +837,9 @@ impl<S: Shell> Host<S> {
         };
         if let Err(e) = keyboard.set_xkb_config(self, config) {
             warn!(?layout, ?variant, error = ?e, "cannot set keymap");
+            return;
         }
+        self.send_input_method_keymap();
     }
 
     fn launch(&mut self, name: &str) {
@@ -1161,6 +1166,7 @@ impl<S: Shell> Host<S> {
         self.update_foreign();
         self.update_workspaces();
         self.update_capture_sessions();
+        self.place_input_popups();
     }
 
     /// Ends a press that was going to content. The rest of it goes to the
@@ -1278,7 +1284,9 @@ impl<S: Shell> Host<S> {
                     event.state(),
                     serial,
                     time,
-                    |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, keycode),
+                    |host, modifiers, handle| {
+                        host.filter_key(modifiers, &handle, pressed, keycode, Some(time))
+                    },
                 );
             }
             // Nested, motion only comes as positions; the step between two
@@ -1603,6 +1611,7 @@ impl<S: Shell> Host<S> {
         if let Some(field) = self.text_inputs.changed() {
             self.shell.text_input(field);
         }
+        self.update_input_method();
     }
 
     /// Feeds injected input through the same paths as the seat's.
@@ -1736,7 +1745,7 @@ impl<S: Shell> Host<S> {
             state,
             SERIAL_COUNTER.next_serial(),
             time,
-            |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, raw),
+            |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, raw, None),
         );
     }
 
@@ -2177,6 +2186,9 @@ impl<S: Shell> Host<S> {
         handle: &KeysymHandle<'_>,
         pressed: bool,
         keycode: u32,
+        // When the key came from the seat; keys the shell types are
+        // synthetic and never go to an input method.
+        time: Option<u32>,
     ) -> FilterResult<()> {
         let consumed_release = !pressed && self.consumed_keys.remove(&keycode);
         self.egui_mods = egui::Modifiers {
@@ -2221,10 +2233,18 @@ impl<S: Shell> Host<S> {
                 alt: modifiers.alt,
             },
         };
+        // What would go to a Wayland client goes to an input method's
+        // keyboard grab instead while it is active.
+        let forward = |host: &mut Self| match time {
+            Some(time) if host.input_method_key(keycode, pressed, time) => {
+                FilterResult::Intercept(())
+            }
+            _ => FilterResult::Forward,
+        };
         // An overlay gets every key, shell shortcuts included; a panel or
         // layer surface holding the keyboard gets what the shell leaves.
         if self.overlay().is_some() {
-            return FilterResult::Forward;
+            return forward(self);
         }
         if self.layer_focus.is_some() || self.wlr_exclusive_keyboard().is_some() {
             return match shell_key_route(&mut self.shell, &key, consumed_release) {
@@ -2234,7 +2254,7 @@ impl<S: Shell> Host<S> {
                     }
                     FilterResult::Intercept(())
                 }
-                _ => FilterResult::Forward,
+                _ => forward(self),
             };
         }
         let chrome_focus = self.chrome.ctx.memory(|m| m.focused());
@@ -2276,7 +2296,7 @@ impl<S: Shell> Host<S> {
                 let focused = self.shell.focused();
                 match self.internal_events(focused) {
                     Some(events) => events,
-                    None => return FilterResult::Forward,
+                    None => return forward(self),
                 }
             }
         };
@@ -2442,6 +2462,7 @@ impl<S: Shell> Host<S> {
         }
         self.wlr_send_frames(now);
         self.lock.send_frames(&self.output, now);
+        self.input_method.send_frames(&self.output, now);
         if let Some(surface) = self.cursors.surface() {
             send_frames_surface_tree(surface, &self.output, now, Some(Duration::ZERO), |_, _| {
                 Some(self.output.clone())
@@ -2671,6 +2692,7 @@ impl<S: Shell> Host<S> {
         let wlr_overlay = layer_shell::wlr_elements(&self.output, renderer, WlrLayer::Overlay);
         let locked = self.lock.locked;
         let lock_elements = self.lock.elements(renderer);
+        let input_popups = self.input_method.elements(renderer, scale);
 
         let on_client = self
             .seat
@@ -2752,6 +2774,8 @@ impl<S: Shell> Host<S> {
             );
             draw_surfaces(&mut frame, elements, scale)?;
         }
+        // An input method's candidates go over everything but the lock.
+        draw_surfaces(&mut frame, &input_popups, scale)?;
         // Locked: the session is drawn as usual, so egui's passes keep
         // their textures in step, then covered.
         if locked {
@@ -3103,6 +3127,7 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
         self.manage_on_first_commit(surface);
         self.icon_committed(surface);
         self.wlr_commit(surface);
+        self.input_popup_commit(surface);
         self.popups.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()
