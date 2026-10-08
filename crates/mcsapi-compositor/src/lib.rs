@@ -143,6 +143,50 @@ pub struct TextField {
     pub password: bool,
 }
 
+/// Something a client says about one of its windows besides its title and
+/// app ID, passed to [`Shell::window_hint`]. Sent once when the window is
+/// mapped for each hint already set, then on every change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum WindowHint {
+    /// The window belongs to another one (`xdg_toplevel.set_parent`, or a
+    /// window of another client through `xdg-foreign`, as a portal's file
+    /// chooser does), or to none any more. A shell usually keeps such a
+    /// window above its parent, centred on it, instead of tiling it.
+    Parent(Option<WindowId>),
+    /// The window is a modal dialog (`xdg_dialog_v1`): its parent should not
+    /// take input until it closes.
+    Modal(bool),
+    /// The window's own icon (`xdg_toplevel_icon_v1`), for a task list.
+    Icon(Icon),
+    /// A name for the window among its app's windows that stays the same
+    /// between runs (`xdg_toplevel_tag_v1`): "main", "preferences". Suited
+    /// for remembering where a window went; not translated.
+    Tag(String),
+    /// A translated, human-readable description of the window
+    /// (`xdg_toplevel_tag_v1`), for a screen reader or a window list.
+    Description(String),
+}
+
+/// A window's icon: a name from the icon theme, pixels, or both.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Icon {
+    /// An icon theme name, such as `org.gnome.Nautilus`.
+    pub name: Option<String>,
+    /// The largest image the client provided.
+    pub image: Option<IconImage>,
+}
+
+/// A square icon image.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IconImage {
+    /// Width and height in pixels.
+    pub size: u32,
+    /// Rows top to bottom, 4 bytes (RGBA, premultiplied alpha) per pixel,
+    /// as `egui::ColorImage::from_rgba_premultiplied` takes them.
+    pub rgba: Vec<u8>,
+}
+
 /// A screen area whose backdrop is blurred before the chrome is painted.
 ///
 /// Paint the panel itself in [`Shell::chrome`] with a translucent fill; the
@@ -572,6 +616,23 @@ pub trait Shell: 'static {
     /// as committed text rather than as key presses, so characters the
     /// keymap lacks still arrive.
     fn text_input(&mut self, _field: Option<TextField>) {}
+
+    /// A client said something new about one of its windows.
+    fn window_hint(&mut self, _window: WindowId, _hint: WindowHint) {}
+
+    /// A client rang the system bell (`xdg_system_bell_v1`), from one of
+    /// its windows or from none, as a terminal does on `\a`.
+    fn bell(&mut self, _window: Option<WindowId>) {}
+
+    /// A client asked for `window` to be brought forward and given the
+    /// keyboard (`xdg_activation_v1`), with a token from a recent user
+    /// action: a click in another app's link, a notification's button, or a
+    /// launch through [`Command::Launch`]. Requests without one never reach
+    /// the shell, so a window cannot steal focus on its own. By default the
+    /// window is focused; a shell may instead mark it as wanting attention.
+    fn activate(&mut self, window: WindowId) {
+        self.focus(window);
+    }
 }
 
 /// In-process apps the compositor can launch, usually backed by an
