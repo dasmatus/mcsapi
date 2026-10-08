@@ -43,8 +43,8 @@ use smithay::{
 use std::time::Duration;
 use tracing::warn;
 
-use super::{Host, Layer, Route, security::unsandboxed};
-use crate::{Reserved, Role, Shell, egui};
+use super::{Host, Layer, Route, effects, security::unsandboxed};
+use crate::{Blur, Reserved, Role, Shell, egui};
 
 pub(super) struct LayerShell {
     state: WlrLayerShellState,
@@ -230,20 +230,22 @@ impl<S: Shell + 'static> Host<S> {
     }
 }
 
-/// The render elements of the layer-shell surfaces on `layer`, bottom
-/// to top, one list per surface (each front to back, as
+/// The layer-shell surfaces on `layer`, bottom to top: what to blur
+/// behind each (`effects`), and its render elements (front to back, as
 /// `draw_surfaces` takes them).
 pub(super) fn wlr_elements(
     output: &Output,
     renderer: &mut GlesRenderer,
     layer: WlrLayer,
-) -> Vec<Vec<WaylandSurfaceRenderElement<GlesRenderer>>> {
+) -> Vec<(Vec<Blur>, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> {
     let scale = Scale::from(1.0);
     let map = layer_map_for_output(output);
     map.layers_on(layer)
         .filter_map(|l| {
-            let loc = map.layer_geometry(l)?.loc;
-            Some(l.render_elements(renderer, loc.to_physical(1), scale, 1.0))
+            let geometry = map.layer_geometry(l)?;
+            let blurs = effects::surface_blurs(l.wl_surface(), geometry.loc, geometry);
+            let elements = l.render_elements(renderer, geometry.loc.to_physical(1), scale, 1.0);
+            Some((blurs, elements))
         })
         .collect()
 }

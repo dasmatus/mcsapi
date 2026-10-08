@@ -64,7 +64,9 @@ Buffers and surfaces: `wp_viewporter`, `wp_fractional_scale_v1` (every
 surface is told scale 1, which is what the compositor draws at),
 `wp_single_pixel_buffer_v1`, `wp_alpha_modifier_v1`, and the hints
 `wp_content_type_v1` and `wp_tearing_control_v1`, recorded per surface; frames
-stay in step with the refresh either way.
+stay in step with the refresh either way. `ext_background_effect_manager_v1` blurs what is
+behind the region a client asks for (a translucent terminal or bar), with
+the same blur as `Shell::blur_regions`.
 
 Window hints, passed to `Shell::window_hint`: parents from
 `xdg_toplevel.set_parent` and `zxdg_exporter_v2`/`zxdg_importer_v2`

@@ -21,6 +21,7 @@ use std::{
 mod automation;
 mod capture;
 mod cursor;
+mod effects;
 mod foreign;
 mod hints;
 mod input;
@@ -613,7 +614,10 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
         automation: automation::Automation::new::<S>(&dh, &primary_selection_state),
         primary_selection_state,
-        _hints: hints::Hints::new::<S>(&dh),
+        _hints: {
+            effects::create_global::<S>(&dh);
+            hints::Hints::new::<S>(&dh)
+        },
         toplevels: toplevel::Toplevels::new::<S>(&dh),
         inputs: input::Inputs::new(&dh, event_loop.handle()),
         cursors: cursor::Cursors::new::<S>(&dh),
@@ -2611,22 +2615,29 @@ impl<S: Shell> Host<S> {
         }
 
         // Import client buffers before starting the frame.
-        let mut surfaces: Vec<Vec<WaylandSurfaceRenderElement<GlesRenderer>>> = Vec::new();
+        // With each window, what its client asked to blur behind it.
+        let mut surfaces: Vec<(Vec<Blur>, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> =
+            Vec::new();
         for p in placements {
             let elements = match self.windows.get(&p.window) {
                 Some(Content::Wayland(w)) => self
                     .space
                     .element_location(w)
                     .map(|loc| {
-                        w.render_elements(
+                        let blurs = w
+                            .toplevel()
+                            .map(|t| effects::surface_blurs(t.wl_surface(), loc, p.client))
+                            .unwrap_or_default();
+                        let elements = w.render_elements(
                             renderer,
                             loc.to_physical_precise_round(scale),
                             scale,
                             1.0,
-                        )
+                        );
+                        (blurs, elements)
                     })
                     .unwrap_or_default(),
-                _ => Vec::new(),
+                _ => Default::default(),
             };
             surfaces.push(elements);
         }
@@ -2673,10 +2684,17 @@ impl<S: Shell> Host<S> {
         frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
         let deco = self.decorations.painter.as_mut().expect("created above");
         paint(&gl, deco, screen_px, &mut background);
-        for elements in &wlr_below {
+        for (behind, elements) in &wlr_below {
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
             draw_surfaces(&mut frame, elements, scale)?;
         }
-        for (((p, mut decoration), content), elements) in placements
+        for (((p, mut decoration), content), (behind, elements)) in placements
             .iter()
             .zip(decorations)
             .zip(contents)
@@ -2690,33 +2708,48 @@ impl<S: Shell> Host<S> {
                 let painter = egui.painter.as_mut().expect("created above");
                 paint(&gl, painter, screen_px, &mut pass);
             }
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
             draw_surfaces(&mut frame, elements, scale)?;
         }
-        if !blurs.is_empty() {
-            if self.blurrer.is_none() && !self.blur_unavailable {
-                // SAFETY: the frame's context is current while it is open.
-                match unsafe { blur::Blurrer::new(&gl) } {
-                    Ok(b) => self.blurrer = Some(b),
-                    Err(e) => {
-                        self.blur_unavailable = true;
-                        warn!(error = %e, "blur unavailable");
-                    }
-                }
-            }
-            if let Some(blurrer) = &mut self.blurrer {
-                // SAFETY: as above, with the frame's framebuffer bound.
-                if let Err(e) = unsafe { blurrer.apply(&gl, screen_px, blurs) } {
-                    warn!(error = %e, "blur failed");
-                }
-                reset_gl(&gl, screen_px);
-            }
+        blur_behind(
+            &mut self.blurrer,
+            &mut self.blur_unavailable,
+            &gl,
+            screen_px,
+            blurs,
+        );
+        for elements in &panels {
+            draw_surfaces(&mut frame, elements, scale)?;
         }
-        for elements in panels.iter().chain(&wlr_top) {
+        for (behind, elements) in &wlr_top {
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
             draw_surfaces(&mut frame, elements, scale)?;
         }
         let chrome_painter = self.chrome.painter.as_mut().expect("created above");
         paint(&gl, chrome_painter, screen_px, &mut chrome);
-        for elements in overlays.iter().chain(&wlr_overlay) {
+        for elements in &overlays {
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
+        for (behind, elements) in &wlr_overlay {
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
             draw_surfaces(&mut frame, elements, scale)?;
         }
         // Locked: the session is drawn as usual, so egui's passes keep
@@ -2960,6 +2993,37 @@ fn read_frame(gl: &glow::Context, [w, h]: [u32; 2]) -> Capture {
         width: w,
         height: h,
         rgba: flipped,
+    }
+}
+
+/// Blurs `blurs` in what the frame being drawn holds so far, creating the
+/// blurrer the first time.
+fn blur_behind(
+    blurrer: &mut Option<blur::Blurrer>,
+    unavailable: &mut bool,
+    gl: &glow::Context,
+    screen_px: [u32; 2],
+    blurs: &[Blur],
+) {
+    if blurs.is_empty() {
+        return;
+    }
+    if blurrer.is_none() && !*unavailable {
+        // SAFETY: the frame's context is current while it is open.
+        match unsafe { blur::Blurrer::new(gl) } {
+            Ok(b) => *blurrer = Some(b),
+            Err(e) => {
+                *unavailable = true;
+                warn!(error = %e, "blur unavailable");
+            }
+        }
+    }
+    if let Some(blurrer) = blurrer {
+        // SAFETY: as above, with the frame's framebuffer bound.
+        if let Err(e) = unsafe { blurrer.apply(gl, screen_px, blurs) } {
+            warn!(error = %e, "blur failed");
+        }
+        reset_gl(gl, screen_px);
     }
 }
 
