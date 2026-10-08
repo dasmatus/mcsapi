@@ -30,6 +30,10 @@
 //! a syncobj through an eventfd, clients may also pass explicit fences
 //! (`wp_linux_drm_syncobj_v1`). NVIDIA's EGL Wayland platform needs the
 //! first to present at all, and uses the second where it can.
+//!
+//! The vblank that puts a frame on screen also carries the kernel's
+//! timestamp and counter, which `wp_presentation` reports to the clients
+//! whose commits the frame showed (see `host::timing`).
 
 use std::{collections::VecDeque, io, path::PathBuf};
 
@@ -39,19 +43,24 @@ use smithay::{
             Format, Fourcc, Modifier,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
         },
-        drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmNode, GbmBufferedSurface, NodeType},
+        drm::{
+            DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmEventMetadata, DrmEventTime, DrmNode,
+            GbmBufferedSurface, NodeType,
+        },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{ImportDma, element::surface::WaylandSurfaceRenderElement, gles::GlesRenderer},
         session::{Session, libseat::LibSeatSession, libseat::LibSeatSessionNotifier},
         udev,
     },
+    desktop::utils::OutputPresentationFeedback,
+    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
     reexports::{
         drm::control::{Device as _, Mode, ModeTypeFlags, connector, crtc},
         input::Libinput,
         rustix::fs::OFlags,
     },
-    utils::{DeviceFd, Physical, Size},
+    utils::{DeviceFd, Monotonic, Physical, Size, Time},
     wayland::{
         dmabuf::{DmabufFeedback, DmabufFeedbackBuilder},
         drm_syncobj::supports_syncobj_eventfd,
@@ -89,11 +98,23 @@ pub(crate) struct Kms {
     /// frames where nothing does.
     pub(crate) in_flight: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     /// The frames handed to the surface whose vblank has not come yet,
-    /// oldest first, each with the client surfaces it drew. The first waits
-    /// for its page flip, a second for the vblank that shows the first.
-    queued: VecDeque<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    /// oldest first. The first waits for its page flip, a second for the
+    /// vblank that shows the first.
+    queued: VecDeque<Queued>,
     /// Whether this session holds the seat (it is on the active VT).
     pub(crate) active: bool,
+    /// Whether the display is on: `zwlr_output_power_v1` turns it off.
+    powered: bool,
+    /// The gamma ramp a `zwlr_gamma_control_v1` client replaced, to put
+    /// back when it lets go: red, then green, then blue.
+    replaced_gamma: Option<Vec<u16>>,
+}
+
+/// A frame handed to the surface: the client surfaces it drew, and their
+/// presentation feedback. Dropping it discards the feedback.
+struct Queued {
+    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    feedback: Option<OutputPresentationFeedback>,
 }
 
 /// Event sources the host puts on its loop.
@@ -179,6 +200,8 @@ impl Kms {
                 in_flight: Vec::new(),
                 queued: VecDeque::new(),
                 active,
+                powered: true,
+                replaced_gamma: None,
             },
             Sources {
                 session: session_notifier,
@@ -202,12 +225,16 @@ impl Kms {
     /// Whether a frame may be drawn now: the seat is ours and the surface
     /// can take another frame (see the module's note on triple buffering).
     pub(crate) fn can_draw(&self) -> bool {
-        self.active && self.queued.len() < QUEUED_FRAMES
+        self.active && self.powered && self.queued.len() < QUEUED_FRAMES
     }
 
-    /// The frame just drawn was handed to the surface.
-    pub(crate) fn queued(&mut self) {
-        self.queued.push_back(std::mem::take(&mut self.in_flight));
+    /// The frame just drawn was handed to the surface, with the feedback
+    /// for when it is on screen.
+    pub(crate) fn queued(&mut self, feedback: Option<OutputPresentationFeedback>) {
+        self.queued.push_back(Queued {
+            elements: std::mem::take(&mut self.in_flight),
+            feedback,
+        });
     }
 
     /// The seat moved to another VT: let go of the GPU and input devices.
@@ -234,8 +261,14 @@ impl Kms {
         self.in_flight.clear();
     }
 
-    /// A vblank: the queued buffer is on screen.
-    pub(crate) fn vblank(&mut self, crtc: crtc::Handle) {
+    /// A vblank: the queued buffer is on screen. `now` stands in for a
+    /// timestamp the kernel took on another clock.
+    pub(crate) fn vblank(
+        &mut self,
+        crtc: crtc::Handle,
+        metadata: Option<DrmEventMetadata>,
+        now: Time<Monotonic>,
+    ) {
         if crtc != self.crtc {
             return;
         }
@@ -244,7 +277,23 @@ impl Kms {
         // the frame queued behind it, if there is one.
         match self.surface.frame_submitted() {
             Ok(Some(())) => {
-                self.queued.pop_front();
+                let Some(mut feedback) = self.queued.pop_front().and_then(|q| q.feedback) else {
+                    return;
+                };
+                let (time, seq, clock) = match metadata {
+                    Some(DrmEventMetadata {
+                        time: DrmEventTime::Monotonic(time),
+                        sequence,
+                    }) => (time.into(), sequence, Kind::HwClock),
+                    Some(DrmEventMetadata { sequence, .. }) => (now, sequence, Kind::empty()),
+                    None => (now, 0, Kind::empty()),
+                };
+                feedback.presented(
+                    time,
+                    crate::host::refresh(self.refresh_mhz(), false),
+                    u64::from(seq),
+                    Kind::Vsync | Kind::HwCompletion | clock,
+                );
             }
             Ok(None) => {}
             Err(e) => {
@@ -254,10 +303,72 @@ impl Kms {
                 // dropped it. The GPU may still be drawing it, so its
                 // client buffers ride with the next frame instead.
                 if let Some(lost) = self.queued.pop_front() {
-                    self.in_flight.extend(lost);
+                    self.in_flight.extend(lost.elements);
                 }
             }
         }
+    }
+
+    /// Turns the display off, its planes disabled and DPMS off, or back
+    /// on, which happens with the next frame's commit.
+    pub(crate) fn set_power(&mut self, on: bool) {
+        if on == self.powered {
+            return;
+        }
+        self.powered = on;
+        if !on {
+            if let Err(e) = self.surface.surface().clear() {
+                warn!(error = %e, "cannot turn the display off");
+            }
+            // No vblank comes for frames queued before, as on a VT switch.
+            self.surface.reset_buffers();
+            self.queued.clear();
+        }
+    }
+
+    /// Entries per channel in the display's gamma ramp; none where the
+    /// CRTC has no ramp.
+    pub(crate) fn gamma_size(&self) -> Option<u32> {
+        self.drm
+            .get_crtc(self.crtc)
+            .ok()
+            .map(|c| c.gamma_length())
+            .filter(|&n| n > 0)
+    }
+
+    /// Sets the gamma ramp: `gamma_size` entries of red, then green, then
+    /// blue. `None` puts back the ramp the first one replaced.
+    pub(crate) fn set_gamma(&mut self, ramp: Option<&[u16]>) -> io::Result<()> {
+        let Some(n) = self.gamma_size().map(|n| n as usize) else {
+            return Err(io::ErrorKind::Unsupported.into());
+        };
+        let ramp = match ramp {
+            Some(ramp) => {
+                if self.replaced_gamma.is_none() {
+                    let mut old = vec![0; 3 * n];
+                    let (red, rest) = old.split_at_mut(n);
+                    let (green, blue) = rest.split_at_mut(n);
+                    self.drm.get_gamma(self.crtc, red, green, blue)?;
+                    self.replaced_gamma = Some(old);
+                }
+                ramp
+            }
+            None => match &self.replaced_gamma {
+                Some(old) => old,
+                None => return Ok(()),
+            },
+        };
+        if ramp.len() != 3 * n {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let (red, rest) = ramp.split_at(n);
+        let (green, blue) = rest.split_at(n);
+        self.drm.set_gamma(self.crtc, red, green, blue)?;
+        // Back to the original: the next client starts from it again.
+        if self.replaced_gamma.as_deref() == Some(ramp) {
+            self.replaced_gamma = None;
+        }
+        Ok(())
     }
 
     /// The `zwp_linux_dmabuf_v1` feedback for every surface: the buffers

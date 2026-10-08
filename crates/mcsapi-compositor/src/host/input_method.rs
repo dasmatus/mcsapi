@@ -97,6 +97,16 @@ impl InputMethod {
         Self::default()
     }
 
+    /// Every popup surface, shown or not.
+    pub(super) fn surfaces(&self) -> impl Iterator<Item = &WlSurface> {
+        self.im.iter().flat_map(|im| &im.popups).map(|p| &p.surface)
+    }
+
+    /// The popup surfaces being shown.
+    pub(super) fn shown_surfaces(&self) -> impl Iterator<Item = &WlSurface> {
+        self.shown().map(|(surface, _)| surface)
+    }
+
     /// The popups being shown, with where.
     fn shown(&self) -> impl Iterator<Item = (&WlSurface, Point<i32, Logical>)> {
         self.im
