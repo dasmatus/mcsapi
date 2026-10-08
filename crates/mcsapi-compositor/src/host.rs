@@ -76,7 +76,7 @@ use smithay::{
         wayland_server::{
             Client, Display, DisplayHandle, Resource,
             backend::{ClientData, ClientId, DisconnectReason},
-            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+            protocol::{wl_buffer, wl_seat, wl_shm, wl_surface::WlSurface},
         },
         winit::{dpi::LogicalSize, window::Window as WinitWindow},
     },
@@ -665,7 +665,13 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         compositor_state: CompositorState::new::<Host<S>>(&dh),
         xdg_shell_state: XdgShellState::new::<Host<S>>(&dh),
         _xdg_decoration_state: XdgDecorationState::new::<Host<S>>(&dh),
-        shm_state: ShmState::new::<Host<S>>(&dh, vec![]),
+        // Beside the two every compositor has, the byte orders screen
+        // captures can be written in (`capture::FORMATS`): a client sharing
+        // the screen allocates its buffers in whichever it negotiated.
+        shm_state: ShmState::new::<Host<S>>(
+            &dh,
+            vec![wl_shm::Format::Xbgr8888, wl_shm::Format::Abgr8888],
+        ),
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
         _pointer_gestures_state: PointerGesturesState::new::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
