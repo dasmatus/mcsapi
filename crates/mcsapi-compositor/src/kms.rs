@@ -7,6 +7,15 @@
 //! its preferred mode through GBM buffers, and gives up the GPU and input
 //! devices whenever the seat moves to another VT.
 //!
+//! Frames are triple buffered: one buffer is on screen, one may wait for
+//! its page flip, and one more may be queued behind it, which Smithay's
+//! surface flips at the vblank that shows the one before. Drawing is paced
+//! by a timer at the refresh rate, not by the vblank, so with only one
+//! frame allowed past the screen a tick that lands just before the vblank
+//! finds the flip still pending and the frame is dropped; on a GPU that
+//! takes most of a refresh to draw, every other one is. The cost is a
+//! frame of latency when the GPU is ahead, and one more scanout buffer.
+//!
 //! The frame is drawn exactly as for the nested window, into an offscreen
 //! texture, and then copied onto the scanout buffer. The chrome and the blur
 //! are painted with raw GL, which puts row 0 at the bottom as a window
@@ -22,7 +31,7 @@
 //! (`wp_linux_drm_syncobj_v1`). NVIDIA's EGL Wayland platform needs the
 //! first to present at all, and uses the second where it can.
 
-use std::{io, path::PathBuf};
+use std::{collections::VecDeque, io, path::PathBuf};
 
 use smithay::{
     backend::{
@@ -50,6 +59,10 @@ use smithay::{
 };
 use tracing::{error, warn};
 
+/// Frames past the one on screen: one waiting for its flip and one queued
+/// behind it, which is triple buffering. Smithay's surface holds no more.
+const QUEUED_FRAMES: usize = 2;
+
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// The GPU, display and seat of a session on the bare seat.
@@ -64,19 +77,21 @@ pub(crate) struct Kms {
     /// The node clients should allocate their buffers on: the GPU's render
     /// node, else (a display-only device) the node this session opened.
     node: DrmNode,
-    /// A buffer is queued for scanout and its vblank hasn't come yet; the
-    /// next frame waits for it, which paces drawing to the display.
-    pub(crate) frame_pending: bool,
-    /// Client surfaces drawn since the last vblank. Each holds its client's
-    /// buffer, and Smithay releases a buffer (`wl_buffer.release`, and the
-    /// syncobj release point) as soon as nothing holds it, which is when the
-    /// CPU is done with it, not the GPU. The frame that sampled them is on
-    /// screen at the next vblank, and its scanout buffer waited on a fence
-    /// put after the sampling on the same context, so the GPU is done then.
-    /// Without this a client could draw into a buffer the GPU still reads:
-    /// harmless where the kernel orders the two through the dma-buf's
-    /// implicit fences, torn frames where nothing does.
+    /// Client surfaces drawn into the frame being drawn. Each holds its
+    /// client's buffer, and Smithay releases a buffer (`wl_buffer.release`,
+    /// and the syncobj release point) as soon as nothing holds it, which is
+    /// when the CPU is done with it, not the GPU. They move to `queued`
+    /// with their frame, and are let go at the vblank that puts it on
+    /// screen: its scanout buffer waited on a fence put after the sampling
+    /// on the same context, so the GPU is done with them then. Without this
+    /// a client could draw into a buffer the GPU still reads: harmless where
+    /// the kernel orders the two through the dma-buf's implicit fences, torn
+    /// frames where nothing does.
     pub(crate) in_flight: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    /// The frames handed to the surface whose vblank has not come yet,
+    /// oldest first, each with the client surfaces it drew. The first waits
+    /// for its page flip, a second for the vblank that shows the first.
+    queued: VecDeque<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>,
     /// Whether this session holds the seat (it is on the active VT).
     pub(crate) active: bool,
 }
@@ -161,8 +176,8 @@ impl Kms {
                 mode,
                 libinput,
                 node,
-                frame_pending: false,
                 in_flight: Vec::new(),
+                queued: VecDeque::new(),
                 active,
             },
             Sources {
@@ -184,9 +199,15 @@ impl Kms {
         refresh_mhz(&self.mode)
     }
 
-    /// Whether a frame may be drawn now.
+    /// Whether a frame may be drawn now: the seat is ours and the surface
+    /// can take another frame (see the module's note on triple buffering).
     pub(crate) fn can_draw(&self) -> bool {
-        self.active && !self.frame_pending
+        self.active && self.queued.len() < QUEUED_FRAMES
+    }
+
+    /// The frame just drawn was handed to the surface.
+    pub(crate) fn queued(&mut self) {
+        self.queued.push_back(std::mem::take(&mut self.in_flight));
     }
 
     /// The seat moved to another VT: let go of the GPU and input devices.
@@ -207,9 +228,9 @@ impl Kms {
         }
         // Buffers queued before the switch never flipped; start clean.
         self.surface.reset_buffers();
-        self.frame_pending = false;
-        // Their vblank will not come either. The GPU finished that frame
-        // while the seat was away, so its clients' buffers can go back.
+        // Their vblank will not come either. The GPU finished those frames
+        // while the seat was away, so their clients' buffers can go back.
+        self.queued.clear();
         self.in_flight.clear();
     }
 
@@ -218,13 +239,25 @@ impl Kms {
         if crtc != self.crtc {
             return;
         }
-        if let Err(e) = self.surface.frame_submitted() {
-            warn!(error = %e, "page flip failed");
+        // The frame waiting for this flip is on screen, so the GPU has read
+        // every client buffer it drew (see `in_flight`). Smithay then flips
+        // the frame queued behind it, if there is one.
+        match self.surface.frame_submitted() {
+            Ok(Some(())) => {
+                self.queued.pop_front();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(error = %e, "page flip failed");
+                self.queued.pop_front();
+                // The queued frame's flip is what failed, and the surface
+                // dropped it. The GPU may still be drawing it, so its
+                // client buffers ride with the next frame instead.
+                if let Some(lost) = self.queued.pop_front() {
+                    self.in_flight.extend(lost);
+                }
+            }
         }
-        self.frame_pending = false;
-        // The frame is on screen, so the GPU has read every client buffer it
-        // drew (see `in_flight`).
-        self.in_flight.clear();
     }
 
     /// The `zwp_linux_dmabuf_v1` feedback for every surface: the buffers

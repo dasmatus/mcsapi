@@ -462,7 +462,7 @@ impl Backend {
     }
 
     /// Whether a frame may be drawn now: on the bare seat, only while the
-    /// seat is ours and the last frame has reached the screen.
+    /// seat is ours and fewer than two frames wait for the screen.
     fn can_draw(&self) -> bool {
         match self {
             Self::Winit(_) => true,
@@ -2728,7 +2728,7 @@ impl<S: Shell> Host<S> {
                 // where the plane takes no fence. Nothing relies on the
                 // driver ordering the flip after the drawing by itself.
                 k.surface.queue_buffer(Some(sync), Some(vec![full]), ())?;
-                k.frame_pending = true;
+                k.queued();
             }
         }
         Ok(())
