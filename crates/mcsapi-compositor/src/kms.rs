@@ -103,6 +103,11 @@ pub(crate) struct Kms {
     queued: VecDeque<Queued>,
     /// Whether this session holds the seat (it is on the active VT).
     pub(crate) active: bool,
+    /// Whether the display is on: `zwlr_output_power_v1` turns it off.
+    powered: bool,
+    /// The gamma ramp a `zwlr_gamma_control_v1` client replaced, to put
+    /// back when it lets go: red, then green, then blue.
+    replaced_gamma: Option<Vec<u16>>,
 }
 
 /// A frame handed to the surface: the client surfaces it drew, and their
@@ -195,6 +200,8 @@ impl Kms {
                 in_flight: Vec::new(),
                 queued: VecDeque::new(),
                 active,
+                powered: true,
+                replaced_gamma: None,
             },
             Sources {
                 session: session_notifier,
@@ -218,7 +225,7 @@ impl Kms {
     /// Whether a frame may be drawn now: the seat is ours and the surface
     /// can take another frame (see the module's note on triple buffering).
     pub(crate) fn can_draw(&self) -> bool {
-        self.active && self.queued.len() < QUEUED_FRAMES
+        self.active && self.powered && self.queued.len() < QUEUED_FRAMES
     }
 
     /// The frame just drawn was handed to the surface, with the feedback
@@ -300,6 +307,68 @@ impl Kms {
                 }
             }
         }
+    }
+
+    /// Turns the display off, its planes disabled and DPMS off, or back
+    /// on, which happens with the next frame's commit.
+    pub(crate) fn set_power(&mut self, on: bool) {
+        if on == self.powered {
+            return;
+        }
+        self.powered = on;
+        if !on {
+            if let Err(e) = self.surface.surface().clear() {
+                warn!(error = %e, "cannot turn the display off");
+            }
+            // No vblank comes for frames queued before, as on a VT switch.
+            self.surface.reset_buffers();
+            self.queued.clear();
+        }
+    }
+
+    /// Entries per channel in the display's gamma ramp; none where the
+    /// CRTC has no ramp.
+    pub(crate) fn gamma_size(&self) -> Option<u32> {
+        self.drm
+            .get_crtc(self.crtc)
+            .ok()
+            .map(|c| c.gamma_length())
+            .filter(|&n| n > 0)
+    }
+
+    /// Sets the gamma ramp: `gamma_size` entries of red, then green, then
+    /// blue. `None` puts back the ramp the first one replaced.
+    pub(crate) fn set_gamma(&mut self, ramp: Option<&[u16]>) -> io::Result<()> {
+        let Some(n) = self.gamma_size().map(|n| n as usize) else {
+            return Err(io::ErrorKind::Unsupported.into());
+        };
+        let ramp = match ramp {
+            Some(ramp) => {
+                if self.replaced_gamma.is_none() {
+                    let mut old = vec![0; 3 * n];
+                    let (red, rest) = old.split_at_mut(n);
+                    let (green, blue) = rest.split_at_mut(n);
+                    self.drm.get_gamma(self.crtc, red, green, blue)?;
+                    self.replaced_gamma = Some(old);
+                }
+                ramp
+            }
+            None => match &self.replaced_gamma {
+                Some(old) => old,
+                None => return Ok(()),
+            },
+        };
+        if ramp.len() != 3 * n {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let (red, rest) = ramp.split_at(n);
+        let (green, blue) = rest.split_at(n);
+        self.drm.set_gamma(self.crtc, red, green, blue)?;
+        // Back to the original: the next client starts from it again.
+        if self.replaced_gamma.as_deref() == Some(ramp) {
+            self.replaced_gamma = None;
+        }
+        Ok(())
     }
 
     /// The `zwp_linux_dmabuf_v1` feedback for every surface: the buffers

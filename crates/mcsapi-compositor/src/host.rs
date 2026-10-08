@@ -28,6 +28,7 @@ mod input;
 mod input_method;
 mod layer_shell;
 mod lock;
+mod output_config;
 mod security;
 mod timing;
 #[cfg(feature = "kms")]
@@ -366,6 +367,7 @@ pub(crate) struct Host<S: Shell> {
     automation: automation::Automation,
     input_method: input_method::InputMethod,
     timing: timing::Timing,
+    output_config: output_config::OutputConfig,
     security: security::Security<S>,
     text_inputs: TextInputs,
     popups: PopupManager,
@@ -703,6 +705,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         workspaces: workspaces::Workspaces::new::<S>(&dh),
         input_method: input_method::InputMethod::new::<S>(&dh),
         timing: timing::Timing::new::<S>(&dh),
+        output_config: output_config::OutputConfig::new::<S>(&dh),
         security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
             TextInputs::global::<S>(&dh);
@@ -1242,6 +1245,7 @@ impl<S: Shell> Host<S> {
         self.update_workspaces();
         self.update_capture_sessions();
         self.place_input_popups();
+        self.update_output_heads();
     }
 
     /// Ends a press that was going to content. The rest of it goes to the
@@ -2429,7 +2433,8 @@ impl<S: Shell> Host<S> {
     /// Draws one frame: background, then per window its decoration and
     /// content, then the chrome and the pointer.
     fn render(&mut self) {
-        if !self.backend.can_draw() {
+        // Nothing is drawn while output power has the display off.
+        if !self.backend.can_draw() || !self.output_config.powered {
             self.run_commands();
             return;
         }

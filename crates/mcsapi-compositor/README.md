@@ -134,6 +134,13 @@ and `wp_commit_timing_manager_v1` (Mesa's Vulkan FIFO mode, video players)
 hold commits until the previous one was shown or the requested time. A
 hidden window's FIFO barriers still clear every frame.
 
+The display: `zwlr_output_manager_v1` (wlr-randr, kanshi) lists the output;
+a configuration that keeps it as it is succeeds and any other fails, since
+there is one display at one mode. `zwlr_output_power_manager_v1` (wlopm,
+swayidle) turns it off, with DPMS on the bare seat, and nothing is drawn
+until it is back on. `zwlr_gamma_control_manager_v1` (gammastep, wlsunset)
+sets the bare seat's gamma ramp for one client at a time; nested it fails.
+
 Screen capture: `ext_image_copy_capture_manager_v1` with output and window
 sources (`ext_output_image_capture_source_manager_v1`,
 `ext_foreign_toplevel_image_capture_source_manager_v1`), and
@@ -151,8 +158,8 @@ leaves the session locked until another one unlocks it.
 Sandboxes: `wp_security_context_manager_v1` marks clients that connect
 through a socket a sandbox (Flatpak) opened. They do not see layer-shell,
 data control, the virtual keyboard or pointer, input methods, the session
-lock, the window lists and workspaces, screen capture, or the security
-context manager itself.
+lock, the window lists and workspaces, screen capture, output management,
+power and gamma, or the security context manager itself.
 
 ## Try it
 
