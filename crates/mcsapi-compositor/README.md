@@ -51,7 +51,7 @@ Capture queued after them sees their result. While one runs,
 can refuse to let an agent confirm what only a person should.
 
 Not yet: more than one display on the bare seat, hotplug, direct scanout of
-client buffers, layer-shell, XWayland, popup grabs, linux-dmabuf.
+client buffers, XWayland, popup grabs, linux-dmabuf.
 
 ## Protocols
 
@@ -64,7 +64,9 @@ Buffers and surfaces: `wp_viewporter`, `wp_fractional_scale_v1` (every
 surface is told scale 1, which is what the compositor draws at),
 `wp_single_pixel_buffer_v1`, `wp_alpha_modifier_v1`, and the hints
 `wp_content_type_v1` and `wp_tearing_control_v1`, recorded per surface; frames
-stay in step with the refresh either way.
+stay in step with the refresh either way. `ext_background_effect_manager_v1` blurs what is
+behind the region a client asks for (a translucent terminal or bar), with
+the same blur as `Shell::blur_regions`.
 
 Window hints, passed to `Shell::window_hint`: parents from
 `xdg_toplevel.set_parent` and `zxdg_exporter_v2`/`zxdg_importer_v2`
@@ -78,7 +80,73 @@ that had the keyboard asked for, or the one a launch puts in
 Input and clipboard: `wl_data_device_manager` (clipboard and drag and drop),
 `zwp_primary_selection_device_manager_v1` (middle-click paste),
 `zwp_pointer_gestures_v1`, `zwp_text_input_manager_v3` (see
-`Shell::text_input`).
+`Shell::text_input`), `zwp_relative_pointer_manager_v1` and
+`zwp_pointer_constraints_v1` (games and remote desktops lock or confine the
+pointer while it is over them and focused), `wp_pointer_warp_v1` (a client
+may move the pointer only within its own surface while it has it), and
+`zwp_tablet_manager_v2` (pens over clients; over the chrome and in-process
+apps a pen moves the pointer, its tip and buttons click).
+`zwp_keyboard_shortcuts_inhibit_manager_v1` passes the shell's shortcuts to
+a focused client that asks, if `Shell::inhibit_shortcuts` allows it.
+
+Input methods: `zwp_input_method_manager_v2` (fcitx5, squeekboard) edits the
+focused `zwp_text_input_v3` field: it hears the field's surrounding text and
+content type, and its preedit, commits and deletions go back to the field.
+Its keyboard grab gets the seat's keys after the shell's shortcuts, and its
+candidate popup is drawn under the field's cursor, above everything but a
+session lock. One input method is connected at a time.
+
+Cursors: `wp_cursor_shape_manager_v1` and cursor surfaces. Named shapes, and
+the shapes egui asks for over the chrome and in-process apps, come from the
+XCursor theme in `XCURSOR_THEME` at `XCURSOR_SIZE`; the compositor paints its
+own arrow when there is no theme.
+
+Idle: `ext_idle_notifier_v1` tells clients when the seat has been idle, and
+`zwp_idle_inhibit_manager_v1` keeps it awake while an inhibiting surface is
+on screen, reported through `Shell::idle_inhibited` (a video player
+playing).
+
+Desktop components from other projects: `zwlr_layer_shell_v1` (bars,
+wallpapers, launchers, notifications such as waybar, swaybg, fuzzel, mako
+and slurp). Background and bottom surfaces sit under windows, top ones with
+runtime panels under the chrome, overlay ones above it; exclusive zones reach
+`Shell::set_reserved` together with runtime panels. A surface that asks for
+the keyboard exclusively on the top or overlay layer gets it, and one that
+asks on demand gets it when clicked, after the shell's shortcuts.
+
+Tools that drive the session: `ext_data_control_manager_v1` and
+`zwlr_data_control_manager_v1` (wl-copy, clipboard managers),
+`zwp_virtual_keyboard_manager_v1` (wtype; keys go straight to the focused
+client) and `zwlr_virtual_pointer_manager_v1` (wayvnc, wlrctl; the same path
+as a mouse, reported to `Shell::input_source` as synthetic).
+
+Window lists and pagers: `ext_foreign_toplevel_list_v1` and
+`zwlr_foreign_toplevel_manager_v1` list every window, Wayland and in-process,
+with title, app ID, parent, focus and maximized state, and let a taskbar
+focus (`Shell::activate`), close, maximize or minimize one
+(`Shell::client_request`). `ext_workspace_manager_v1` shows what
+`Shell::workspaces` lists and passes activation to
+`Shell::activate_workspace`.
+
+Screen capture: `ext_image_copy_capture_manager_v1` with output and window
+sources (`ext_output_image_capture_source_manager_v1`,
+`ext_foreign_toplevel_image_capture_source_manager_v1`), and
+`zwlr_screencopy_manager_v1` (grim, wf-recorder, wayvnc,
+xdg-desktop-portal-wlr). Captures go into `wl_shm` buffers from the next
+frame, with or without the pointer; a window is cut out of the frame where
+its content is placed.
+
+Screen lockers: `ext_session_lock_v1` (swaylock, hyprlock). While locked,
+only the locker's surface is shown and every key and pointer event goes to
+it; the shell's shortcuts, gestures and chrome get none, and
+`Shell::session_locked` says when it starts and ends. A locker that dies
+leaves the session locked until another one unlocks it.
+
+Sandboxes: `wp_security_context_manager_v1` marks clients that connect
+through a socket a sandbox (Flatpak) opened. They do not see layer-shell,
+data control, the virtual keyboard or pointer, input methods, the session
+lock, the window lists and workspaces, screen capture, or the security
+context manager itself.
 
 ## Try it
 

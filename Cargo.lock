@@ -4040,6 +4040,7 @@ dependencies = [
  "subsecond",
  "tracing",
  "tracing-subscriber",
+ "xcursor",
 ]
 
 [[package]]

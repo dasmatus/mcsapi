@@ -177,6 +177,35 @@ pub struct Icon {
     pub image: Option<IconImage>,
 }
 
+/// A workspace as pagers outside the shell see it (`ext_workspace_v1`).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct WorkspaceInfo {
+    /// Stays the same while the workspace exists; how
+    /// [`Shell::activate_workspace`] names it.
+    pub id: String,
+    /// What the user calls it.
+    pub name: String,
+    /// Whether it is the one shown.
+    pub active: bool,
+    /// Whether one of its windows wants attention.
+    pub urgent: bool,
+    /// Whether pagers should leave it out.
+    pub hidden: bool,
+}
+
+impl WorkspaceInfo {
+    /// A workspace that wants no attention and is not hidden.
+    pub fn new(id: impl Into<String>, name: impl Into<String>, active: bool) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            active,
+            ..Self::default()
+        }
+    }
+}
+
 /// A square icon image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IconImage {
@@ -632,6 +661,40 @@ pub trait Shell: 'static {
     /// window is focused; a shell may instead mark it as wanting attention.
     fn activate(&mut self, window: WindowId) {
         self.focus(window);
+    }
+
+    /// A visible surface asked the session to stay awake
+    /// (`zwp_idle_inhibit_v1`, a playing video), or the last such surface
+    /// went away or out of sight. A shell that dims or locks the screen
+    /// after a while of no input should wait while this is `true`.
+    fn idle_inhibited(&mut self, _inhibited: bool) {}
+
+    /// A screen locker (swaylock, through `ext_session_lock_v1`) locked the
+    /// session, or unlocked it. While locked the compositor shows only the
+    /// locker's surface and sends it every key and pointer event; the
+    /// shell's shortcuts, gestures and chrome get none. If the locker dies
+    /// without unlocking, the session stays locked until another locker
+    /// unlocks it.
+    fn session_locked(&mut self, _locked: bool) {}
+
+    /// The shell's workspaces in order, for pagers outside it
+    /// (`ext_workspace_v1`, waybar's workspaces module). Asked every frame
+    /// while a pager is connected; none by default.
+    fn workspaces(&self) -> Vec<WorkspaceInfo> {
+        Vec::new()
+    }
+
+    /// A pager asked to show the workspace with this [`WorkspaceInfo::id`].
+    fn activate_workspace(&mut self, _id: &str) {}
+
+    /// Whether `window` may take the keys the shell otherwise takes
+    /// (`zwp_keyboard_shortcuts_inhibit_manager_v1`) while it has the
+    /// keyboard: a virtual machine or remote desktop viewer passes Super and
+    /// Alt+Tab on to the machine it shows. Asked when it asks; allowed by
+    /// default, as other compositors do. Clicking another window, or
+    /// switching virtual terminals, always gets out.
+    fn inhibit_shortcuts(&mut self, _window: WindowId) -> bool {
+        true
     }
 }
 

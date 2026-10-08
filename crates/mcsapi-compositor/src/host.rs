@@ -18,8 +18,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod automation;
+mod capture;
+mod cursor;
+mod effects;
+mod foreign;
 mod hints;
+mod input;
+mod input_method;
+mod layer_shell;
+mod lock;
+mod security;
 mod toplevel;
+mod workspaces;
 
 use mcsapi::WindowId;
 use smithay::{
@@ -45,7 +56,7 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_pointer_gestures,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
     delegate_xdg_shell,
-    desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{PopupKind, PopupManager, Space, Window, utils::send_frames_surface_tree},
     input::{
         Seat, SeatHandler, SeatState,
         keyboard::{FilterResult, Keycode, Keysym, KeysymHandle, ModifiersState, XkbConfig},
@@ -65,7 +76,7 @@ use smithay::{
         wayland_server::{
             Client, Display, DisplayHandle, Resource,
             backend::{ClientData, ClientId, DisconnectReason},
-            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+            protocol::{wl_buffer, wl_seat, wl_shm, wl_surface::WlSurface},
         },
         winit::{dpi::LogicalSize, window::Window as WinitWindow},
     },
@@ -116,12 +127,14 @@ use smithay::{
     },
 };
 
+use self::input::TabletInput;
 use crate::{
     Apps, Blur, Capture, ClientRequest, Command, Compositor, GestureEvent, Input, InstanceId, Job,
     KeyInput, KeyRoute, Modifiers, MouseButton, OutputTiming, Placement, Press, Reserved, Role,
     RuntimeClient, Shell, a11y, accesskit, blur, egui, text_input::TextInputs,
 };
 use mcsapi_ui::gesture::EguiBridge;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use tracing::{error, warn};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -340,6 +353,16 @@ pub(crate) struct Host<S: Shell> {
     primary_selection_state: PrimarySelectionState,
     _hints: hints::Hints,
     toplevels: toplevel::Toplevels,
+    inputs: input::Inputs<S>,
+    cursors: cursor::Cursors,
+    layer_shell: layer_shell::LayerShell,
+    lock: lock::Lock,
+    foreign: foreign::Foreign,
+    screen_capture: capture::Captures,
+    workspaces: workspaces::Workspaces,
+    automation: automation::Automation,
+    input_method: input_method::InputMethod,
+    security: security::Security<S>,
     text_inputs: TextInputs,
     popups: PopupManager,
     seat: Seat<Self>,
@@ -422,6 +445,9 @@ struct ClientState {
     /// The role of a runtime client, fixed when the compositor created its
     /// connection; `None` for clients of the public socket.
     role: Option<Role>,
+    /// The sandbox a client connected through, which keeps it from the
+    /// privileged globals (see `security`).
+    security_context: Option<smithay::wayland::security_context::SecurityContext>,
 }
 
 impl ClientData for ClientState {
@@ -630,6 +656,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         _ => (None, None),
     };
 
+    let primary_selection_state = PrimarySelectionState::new::<Host<S>>(&dh);
     let mut host = Host {
         start: Instant::now(),
         display: dh.clone(),
@@ -638,7 +665,13 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         compositor_state: CompositorState::new::<Host<S>>(&dh),
         xdg_shell_state: XdgShellState::new::<Host<S>>(&dh),
         _xdg_decoration_state: XdgDecorationState::new::<Host<S>>(&dh),
-        shm_state: ShmState::new::<Host<S>>(&dh, vec![]),
+        // Beside the two every compositor has, the byte orders screen
+        // captures can be written in (`capture::FORMATS`): a client sharing
+        // the screen allocates its buffers in whichever it negotiated.
+        shm_state: ShmState::new::<Host<S>>(
+            &dh,
+            vec![wl_shm::Format::Xbgr8888, wl_shm::Format::Abgr8888],
+        ),
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
         _pointer_gestures_state: PointerGesturesState::new::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
@@ -650,9 +683,22 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         syncobj_state,
         #[cfg(feature = "kms")]
         loop_handle: event_loop.handle(),
-        primary_selection_state: PrimarySelectionState::new::<Host<S>>(&dh),
-        _hints: hints::Hints::new::<S>(&dh),
+        automation: automation::Automation::new::<S>(&dh, &primary_selection_state),
+        primary_selection_state,
+        _hints: {
+            effects::create_global::<S>(&dh);
+            hints::Hints::new::<S>(&dh)
+        },
         toplevels: toplevel::Toplevels::new::<S>(&dh),
+        inputs: input::Inputs::new(&dh, event_loop.handle()),
+        cursors: cursor::Cursors::new::<S>(&dh),
+        layer_shell: layer_shell::LayerShell::new::<S>(&dh),
+        lock: lock::Lock::new::<S>(&dh),
+        foreign: foreign::Foreign::new::<S>(&dh),
+        screen_capture: capture::Captures::new::<S>(&dh),
+        workspaces: workspaces::Workspaces::new::<S>(&dh),
+        input_method: input_method::InputMethod::new::<S>(&dh),
+        security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
             TextInputs::global::<S>(&dh);
             TextInputs::default()
@@ -860,7 +906,9 @@ impl<S: Shell> Host<S> {
         };
         if let Err(e) = keyboard.set_xkb_config(self, config) {
             warn!(?layout, ?variant, error = ?e, "cannot set keymap");
+            return;
         }
+        self.send_input_method_keymap();
     }
 
     fn launch(&mut self, name: &str) {
@@ -1027,7 +1075,18 @@ impl<S: Shell> Host<S> {
                 .map_element(layer.window.clone(), g.loc - offset, false);
             self.space.raise_element(&layer.window, false);
         }
-        let reserved = Reserved::of(self.layers.iter().map(|l| l.role));
+        // Runtime panels and layer-shell surfaces both start from the
+        // output's edges, so the larger of the two covers each edge.
+        let panels = Reserved::of(self.layers.iter().map(|l| l.role));
+        let wlr = self.arrange_wlr_layers();
+        self.lock
+            .resize((self.backend.size().w, self.backend.size().h));
+        let reserved = Reserved {
+            top: panels.top.max(wlr.top),
+            bottom: panels.bottom.max(wlr.bottom),
+            left: panels.left.max(wlr.left),
+            right: panels.right.max(wlr.right),
+        };
         if reserved != self.reserved {
             self.reserved = reserved;
             self.shell.set_reserved(reserved);
@@ -1049,17 +1108,6 @@ impl<S: Shell> Host<S> {
     /// The overlay that has the keyboard, if one is mapped.
     fn overlay(&self) -> Option<&Layer> {
         self.layers.iter().rev().find(|l| l.role == Role::Overlay)
-    }
-
-    /// Whether pointer input at the pointer goes to a panel or overlay
-    /// instead of the chrome or windows: always over an overlay, and over a
-    /// panel unless one of the chrome's popups is open (it may overlap).
-    fn pointer_on_layer(&self) -> bool {
-        match self.layer_under() {
-            Some(layer) if layer.role == Role::Overlay => true,
-            Some(_) => !egui::Popup::is_any_open(&self.chrome.ctx),
-            None => false,
-        }
     }
 
     fn close(&mut self, window: WindowId) {
@@ -1157,26 +1205,37 @@ impl<S: Shell> Host<S> {
         self.arrange_layers();
 
         // The keyboard goes to an overlay while one is mapped, then to a
-        // panel that was clicked, then to the shell's focused window.
+        // layer surface that holds it exclusively, then to a panel or layer
+        // surface that was clicked, then to the shell's focused window.
         let focused = self.shell.focused();
         self.keyboard_focus = focused;
         let layer = self
             .overlay()
             .and_then(|l| l.window.toplevel())
             .map(|t| t.wl_surface().clone())
+            .or_else(|| self.wlr_exclusive_keyboard())
             .or_else(|| self.layer_focus.clone());
-        let surface = layer.or_else(|| {
-            focused.and_then(|id| match self.windows.get(&id) {
-                Some(Content::Wayland(w)) => w.toplevel().map(|t| t.wl_surface().clone()),
-                _ => None,
+        let surface = if self.lock.locked {
+            self.lock.keyboard()
+        } else {
+            layer.or_else(|| {
+                focused.and_then(|id| match self.windows.get(&id) {
+                    Some(Content::Wayland(w)) => w.toplevel().map(|t| t.wl_surface().clone()),
+                    _ => None,
+                })
             })
-        });
+        };
         if surface != self.keyboard_surface {
             self.keyboard_surface = surface.clone();
             if let Some(keyboard) = self.seat.get_keyboard() {
                 keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
             }
         }
+        self.update_idle_inhibit();
+        self.update_foreign();
+        self.update_workspaces();
+        self.update_capture_sessions();
+        self.place_input_popups();
     }
 
     /// Ends a press that was going to content. The rest of it goes to the
@@ -1278,6 +1337,7 @@ impl<S: Shell> Host<S> {
     /// reports touchpad gestures, can share it; winit reports none.
     fn input<B: InputBackend>(&mut self, event: InputEvent<B>) {
         self.set_synthetic(false);
+        self.seat_activity();
         match event {
             InputEvent::Keyboard { event } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -1293,21 +1353,31 @@ impl<S: Shell> Host<S> {
                     event.state(),
                     serial,
                     time,
-                    |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, keycode),
+                    |host, modifiers, handle| {
+                        host.filter_key(modifiers, &handle, pressed, keycode, Some(time))
+                    },
                 );
             }
+            // Nested, motion only comes as positions; the step between two
+            // is the relative motion games and constraints work with.
             InputEvent::PointerMotionAbsolute { event } => {
                 let size = self.backend.size();
-                self.pointer = event.position_transformed((size.w, size.h).into());
+                let to = event.position_transformed((size.w, size.h).into());
+                let delta = to - self.inputs.absolute.replace(to).unwrap_or(self.pointer);
+                self.pointer = self.relative_motion(to, delta, delta, Event::time(&event));
                 self.pointer_motion(Event::time_msec(&event));
             }
             // A mouse or touchpad on the bare seat moves the pointer by
             // deltas; keep it on the output.
             InputEvent::PointerMotion { event } => {
+                use smithay::backend::input::PointerMotionEvent as _;
                 let size = self.backend.size();
-                let delta = smithay::backend::input::PointerMotionEvent::delta(&event);
-                self.pointer.x = (self.pointer.x + delta.x).clamp(0.0, f64::from(size.w - 1));
-                self.pointer.y = (self.pointer.y + delta.y).clamp(0.0, f64::from(size.h - 1));
+                let delta = event.delta();
+                let mut to = self.pointer + delta;
+                to.x = to.x.clamp(0.0, f64::from(size.w - 1));
+                to.y = to.y.clamp(0.0, f64::from(size.h - 1));
+                self.pointer =
+                    self.relative_motion(to, delta, event.delta_unaccel(), Event::time(&event));
                 self.pointer_motion(Event::time_msec(&event));
             }
             InputEvent::PointerButton { event } => {
@@ -1400,6 +1470,22 @@ impl<S: Shell> Host<S> {
                 },
                 Event::time_msec(&event),
             ),
+            InputEvent::DeviceAdded { device } => {
+                self.tablet_event::<B>(TabletInput::Added(device))
+            }
+            InputEvent::DeviceRemoved { device } => {
+                self.tablet_event::<B>(TabletInput::Removed(device));
+            }
+            InputEvent::TabletToolAxis { event } => {
+                self.tablet_event::<B>(TabletInput::Axis(event))
+            }
+            InputEvent::TabletToolProximity { event } => {
+                self.tablet_event::<B>(TabletInput::Proximity(event));
+            }
+            InputEvent::TabletToolTip { event } => self.tablet_event::<B>(TabletInput::Tip(event)),
+            InputEvent::TabletToolButton { event } => {
+                self.tablet_event::<B>(TabletInput::Button(event));
+            }
             _ => {}
         }
     }
@@ -1514,6 +1600,10 @@ impl<S: Shell> Host<S> {
 
     /// Performs an accessibility action on a node of the merged tree.
     fn act(&mut self, node: accesskit::NodeId, action: accesskit::Action, value: Option<String>) {
+        // What the lock hides cannot be acted on either.
+        if self.lock.locked {
+            return;
+        }
         use a11y::Source;
         let Some(source) = self.merger.source(node) else {
             return;
@@ -1590,6 +1680,7 @@ impl<S: Shell> Host<S> {
         if let Some(field) = self.text_inputs.changed() {
             self.shell.text_input(field);
         }
+        self.update_input_method();
     }
 
     /// Feeds injected input through the same paths as the seat's.
@@ -1723,7 +1814,7 @@ impl<S: Shell> Host<S> {
             state,
             SERIAL_COUNTER.next_serial(),
             time,
-            |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, raw),
+            |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, raw, None),
         );
     }
 
@@ -1841,7 +1932,9 @@ impl<S: Shell> Host<S> {
         if event.is_begin() {
             self.end_scroll();
             self.gesture_bridge = EguiBridge::default();
-            self.gesture = Some(if self.shell.gesture(&event) {
+            self.gesture = Some(if self.lock.locked {
+                GestureRoute::Client
+            } else if self.shell.gesture(&event) {
                 GestureRoute::Shell
             } else if self.chrome_wants_pointer() {
                 GestureRoute::Chrome
@@ -1959,13 +2052,6 @@ impl<S: Shell> Host<S> {
         }
     }
 
-    fn surface_under(&self) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, loc) = self.space.element_under(self.pointer)?;
-        window
-            .surface_under(self.pointer - loc.to_f64(), WindowSurfaceType::ALL)
-            .map(|(surface, offset)| (surface, (offset + loc).to_f64()))
-    }
-
     fn pointer_motion(&mut self, time: u32) {
         let pos = self.egui_pos();
         if self.route == Some(Route::Layer) || (self.route.is_none() && self.pointer_on_layer()) {
@@ -1987,6 +2073,7 @@ impl<S: Shell> Host<S> {
                 );
                 pointer.frame(self);
             }
+            self.activate_constraint();
             return;
         }
         self.chrome_events.push(egui::Event::PointerMoved(pos));
@@ -2041,6 +2128,7 @@ impl<S: Shell> Host<S> {
             );
             pointer.frame(self);
         }
+        self.activate_constraint();
     }
 
     fn pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
@@ -2057,18 +2145,10 @@ impl<S: Shell> Host<S> {
             _ => None,
         };
         if pressed && self.route.is_none() {
-            // A click on a panel that takes the keyboard gives it the
-            // keyboard; a click anywhere else takes it back.
-            let layer = self
-                .pointer_on_layer()
-                .then(|| self.layer_under())
-                .flatten()
-                .map(|l| (l.role, l.window.toplevel().map(|t| t.wl_surface().clone())));
-            let on_layer = layer.is_some();
-            self.layer_focus = match layer {
-                Some((Role::Panel { keyboard: true, .. }, surface)) => surface,
-                _ => None,
-            };
+            // A click on a panel or layer surface that takes the keyboard
+            // gives it the keyboard; a click anywhere else takes it back.
+            let on_layer = self.pointer_on_layer();
+            self.layer_focus = on_layer.then(|| self.layer_click_focus()).flatten();
             if on_layer {
                 self.route = Some(Route::Layer);
                 self.sync();
@@ -2175,6 +2255,9 @@ impl<S: Shell> Host<S> {
         handle: &KeysymHandle<'_>,
         pressed: bool,
         keycode: u32,
+        // When the key came from the seat; keys the shell types are
+        // synthetic and never go to an input method.
+        time: Option<u32>,
     ) -> FilterResult<()> {
         let consumed_release = !pressed && self.consumed_keys.remove(&keycode);
         self.egui_mods = egui::Modifiers {
@@ -2198,6 +2281,10 @@ impl<S: Shell> Host<S> {
                 return FilterResult::Intercept(());
             }
         }
+        // A locked session's keys all go to the locker.
+        if self.lock.locked {
+            return FilterResult::Forward;
+        }
         let sym = handle
             .raw_latin_sym_or_raw_current_sym()
             .unwrap_or(modified);
@@ -2215,12 +2302,20 @@ impl<S: Shell> Host<S> {
                 alt: modifiers.alt,
             },
         };
-        // An overlay gets every key, shell shortcuts included; a panel
-        // holding the keyboard gets what the shell leaves.
+        // What would go to a Wayland client goes to an input method's
+        // keyboard grab instead while it is active.
+        let forward = |host: &mut Self| match time {
+            Some(time) if host.input_method_key(keycode, pressed, time) => {
+                FilterResult::Intercept(())
+            }
+            _ => FilterResult::Forward,
+        };
+        // An overlay gets every key, shell shortcuts included; a panel or
+        // layer surface holding the keyboard gets what the shell leaves.
         if self.overlay().is_some() {
-            return FilterResult::Forward;
+            return forward(self);
         }
-        if self.layer_focus.is_some() {
+        if self.layer_focus.is_some() || self.wlr_exclusive_keyboard().is_some() {
             return match shell_key_route(&mut self.shell, &key, consumed_release) {
                 KeyRoute::Consume => {
                     if pressed {
@@ -2228,11 +2323,19 @@ impl<S: Shell> Host<S> {
                     }
                     FilterResult::Intercept(())
                 }
-                _ => FilterResult::Forward,
+                _ => forward(self),
             };
         }
         let chrome_focus = self.chrome.ctx.memory(|m| m.focused());
-        let route = match shell_key_route(&mut self.shell, &key, consumed_release) {
+        // A client holding the shortcuts (a VM viewer, a remote desktop)
+        // gets keys the shell would take; releases of presses the shell
+        // took before still go to the shell.
+        let shell_route = if self.shortcuts_inhibited() && !consumed_release {
+            KeyRoute::Client
+        } else {
+            shell_key_route(&mut self.shell, &key, consumed_release)
+        };
+        let route = match shell_route {
             // A chrome widget focused from the keyboard (Tab) or by a
             // screen reader keeps the keys until Escape hands them back.
             KeyRoute::Client if chrome_focus.is_some() && pressed && sym == Keysym::Escape => {
@@ -2262,7 +2365,7 @@ impl<S: Shell> Host<S> {
                 let focused = self.shell.focused();
                 match self.internal_events(focused) {
                     Some(events) => events,
-                    None => return FilterResult::Forward,
+                    None => return forward(self),
                 }
             }
         };
@@ -2356,6 +2459,7 @@ impl<S: Shell> Host<S> {
             mcsapi_ui::paint_focus_ring(root.ctx(), accent);
         });
         self.chrome_access = output.platform_output.accesskit_update.take();
+        let chrome_cursor = output.platform_output.cursor_icon;
         let chrome = Pass {
             primitives: self
                 .chrome
@@ -2373,12 +2477,22 @@ impl<S: Shell> Host<S> {
         });
         let mut decorations = Vec::with_capacity(placements.len());
         let mut contents = Vec::with_capacity(placements.len());
+        let mut app_cursor = None;
         for p in &placements {
             decorations.push(self.paint_only(screen, time, |shell, painter| {
                 shell.paint_decoration(painter, p)
             }));
-            contents.push(self.run_internal(p, time));
+            let (pass, cursor) = self.run_internal(p, time).unzip();
+            if self.pointer_target == Some(p.window) {
+                app_cursor = cursor;
+            }
+            contents.push(pass);
         }
+        self.cursors.egui = cursor::from_egui(if self.chrome_wants_pointer() {
+            chrome_cursor
+        } else {
+            app_cursor.unwrap_or_default()
+        });
 
         let drawn = self.draw(
             size,
@@ -2415,6 +2529,14 @@ impl<S: Shell> Host<S> {
                 Some(self.output.clone())
             });
         }
+        self.wlr_send_frames(now);
+        self.lock.send_frames(&self.output, now);
+        self.input_method.send_frames(&self.output, now);
+        if let Some(surface) = self.cursors.surface() {
+            send_frames_surface_tree(surface, &self.output, now, Some(Duration::ZERO), |_, _| {
+                Some(self.output.clone())
+            });
+        }
         self.run_commands();
     }
 
@@ -2444,7 +2566,8 @@ impl<S: Shell> Host<S> {
     }
 
     /// Runs an in-process app's frame inside its content area.
-    fn run_internal(&mut self, p: &Placement, time: f64) -> Option<Pass> {
+    /// Also returns the cursor shape the app wants.
+    fn run_internal(&mut self, p: &Placement, time: f64) -> Option<(Pass, egui::CursorIcon)> {
         let theme = self.shell.theme();
         let focused = p.focused;
         let Some(Content::Internal {
@@ -2509,7 +2632,7 @@ impl<S: Shell> Host<S> {
             title.clone_from(&new_title);
             self.shell.set_title(p.window, &new_title);
         }
-        Some(pass)
+        Some((pass, output.platform_output.cursor_icon))
     }
 
     #[allow(clippy::too_many_arguments)] // one per layer of the frame
@@ -2582,22 +2705,29 @@ impl<S: Shell> Host<S> {
         }
 
         // Import client buffers before starting the frame.
-        let mut surfaces: Vec<Vec<WaylandSurfaceRenderElement<GlesRenderer>>> = Vec::new();
+        // With each window, what its client asked to blur behind it.
+        let mut surfaces: Vec<(Vec<Blur>, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> =
+            Vec::new();
         for p in placements {
             let elements = match self.windows.get(&p.window) {
                 Some(Content::Wayland(w)) => self
                     .space
                     .element_location(w)
                     .map(|loc| {
-                        w.render_elements(
+                        let blurs = w
+                            .toplevel()
+                            .map(|t| effects::surface_blurs(t.wl_surface(), loc, p.client))
+                            .unwrap_or_default();
+                        let elements = w.render_elements(
                             renderer,
                             loc.to_physical_precise_round(scale),
                             scale,
                             1.0,
-                        )
+                        );
+                        (blurs, elements)
                     })
                     .unwrap_or_default(),
-                _ => Vec::new(),
+                _ => Default::default(),
             };
             surfaces.push(elements);
         }
@@ -2623,11 +2753,39 @@ impl<S: Shell> Host<S> {
             }
         }
 
+        let wlr_below: Vec<_> = [WlrLayer::Background, WlrLayer::Bottom]
+            .into_iter()
+            .flat_map(|layer| layer_shell::wlr_elements(&self.output, renderer, layer))
+            .collect();
+        let wlr_top = layer_shell::wlr_elements(&self.output, renderer, WlrLayer::Top);
+        let wlr_overlay = layer_shell::wlr_elements(&self.output, renderer, WlrLayer::Overlay);
+        let locked = self.lock.locked;
+        let lock_elements = self.lock.elements(renderer);
+        let input_popups = self.input_method.elements(renderer, scale);
+
+        let on_client = self
+            .seat
+            .get_pointer()
+            .is_some_and(|p| p.current_focus().is_some());
+        let cursor_drawn =
+            self.cursors
+                .drawn(renderer, on_client, self.pointer, self.start.elapsed());
+
         let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
         frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
         let deco = self.decorations.painter.as_mut().expect("created above");
         paint(&gl, deco, screen_px, &mut background);
-        for (((p, mut decoration), content), elements) in placements
+        for (behind, elements) in &wlr_below {
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
+        for (((p, mut decoration), content), (behind, elements)) in placements
             .iter()
             .zip(decorations)
             .zip(contents)
@@ -2641,28 +2799,33 @@ impl<S: Shell> Host<S> {
                 let painter = egui.painter.as_mut().expect("created above");
                 paint(&gl, painter, screen_px, &mut pass);
             }
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
             draw_surfaces(&mut frame, elements, scale)?;
         }
-        if !blurs.is_empty() {
-            if self.blurrer.is_none() && !self.blur_unavailable {
-                // SAFETY: the frame's context is current while it is open.
-                match unsafe { blur::Blurrer::new(&gl) } {
-                    Ok(b) => self.blurrer = Some(b),
-                    Err(e) => {
-                        self.blur_unavailable = true;
-                        warn!(error = %e, "blur unavailable");
-                    }
-                }
-            }
-            if let Some(blurrer) = &mut self.blurrer {
-                // SAFETY: as above, with the frame's framebuffer bound.
-                if let Err(e) = unsafe { blurrer.apply(&gl, screen_px, blurs) } {
-                    warn!(error = %e, "blur failed");
-                }
-                reset_gl(&gl, screen_px);
-            }
-        }
+        blur_behind(
+            &mut self.blurrer,
+            &mut self.blur_unavailable,
+            &gl,
+            screen_px,
+            blurs,
+        );
         for elements in &panels {
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
+        for (behind, elements) in &wlr_top {
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
             draw_surfaces(&mut frame, elements, scale)?;
         }
         let chrome_painter = self.chrome.painter.as_mut().expect("created above");
@@ -2670,13 +2833,66 @@ impl<S: Shell> Host<S> {
         for elements in &overlays {
             draw_surfaces(&mut frame, elements, scale)?;
         }
+        for (behind, elements) in &wlr_overlay {
+            blur_behind(
+                &mut self.blurrer,
+                &mut self.blur_unavailable,
+                &gl,
+                screen_px,
+                behind,
+            );
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
+        // An input method's candidates go over everything but the lock.
+        draw_surfaces(&mut frame, &input_popups, scale)?;
+        // Locked: the session is drawn as usual, so egui's passes keep
+        // their textures in step, then covered.
+        if locked {
+            frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
+            draw_surfaces(&mut frame, &lock_elements, scale)?;
+        }
+        let bare = self
+            .screen_capture
+            .wants(false)
+            .then(|| read_frame(&gl, screen_px));
+        // The arrow's pass also carries texture updates for the shared
+        // decorations context, so it is painted, empty, when unused.
+        if !matches!(cursor_drawn, cursor::Drawn::Painted) {
+            cursor.primitives.clear();
+        }
         let deco = self.decorations.painter.as_mut().expect("created above");
         paint(&gl, deco, screen_px, &mut cursor);
-        let capture = (!self.captures.is_empty()).then(|| read_frame(&gl, screen_px));
+        // Held with the frame's other client buffers below.
+        let mut cursor_elements = Vec::new();
+        match cursor_drawn {
+            cursor::Drawn::Hidden | cursor::Drawn::Painted => {}
+            cursor::Drawn::Surface(elements) => {
+                draw_surfaces(&mut frame, &elements, scale)?;
+                cursor_elements = elements;
+            }
+            cursor::Drawn::Image { texture, at, size } => {
+                let dst = Rectangle::new(at, size);
+                Frame::render_texture_from_to(
+                    &mut frame,
+                    &texture,
+                    Rectangle::from_size(texture.size()).to_f64(),
+                    dst,
+                    &[Rectangle::from_size(size)],
+                    &[],
+                    Transform::Normal,
+                    1.0,
+                )?;
+            }
+        }
+        let with_cursor = (!self.captures.is_empty() || self.screen_capture.wants(true))
+            .then(|| read_frame(&gl, screen_px));
         // Not waited on: offscreen, the copy to the screen reads this frame
         // on the same context after it, and the fence that copy ends with
         // covers both.
         let _sync = frame.finish()?;
+        if locked {
+            self.lock.drawn();
+        }
         drop(framebuffer);
         // The GPU may still be reading the client buffers; they stay held
         // until the frame is on screen (see `Kms::in_flight`). Before the
@@ -2684,9 +2900,24 @@ impl<S: Shell> Host<S> {
         // not release them early either.
         #[cfg(feature = "kms")]
         if let Backend::Kms(k) = &mut self.backend {
-            k.in_flight
-                .extend(surfaces.into_iter().chain(panels).chain(overlays).flatten());
+            let layers = wlr_below.into_iter().chain(wlr_top).chain(wlr_overlay);
+            k.in_flight.extend(
+                surfaces
+                    .into_iter()
+                    .chain(layers)
+                    .map(|(_, elements)| elements)
+                    .chain(panels)
+                    .chain(overlays)
+                    .chain([lock_elements, input_popups, cursor_elements])
+                    .flatten(),
+            );
         }
+        #[cfg(not(feature = "kms"))]
+        drop(cursor_elements);
+        if bare.is_some() || with_cursor.is_some() {
+            self.deliver_captures(bare.as_ref(), with_cursor.as_ref());
+        }
+        let capture = with_cursor.filter(|_| !self.captures.is_empty());
         if offscreen {
             self.present(size)?;
             return Ok(capture);
@@ -2890,6 +3121,37 @@ fn read_frame(gl: &glow::Context, [w, h]: [u32; 2]) -> Capture {
     }
 }
 
+/// Blurs `blurs` in what the frame being drawn holds so far, creating the
+/// blurrer the first time.
+fn blur_behind(
+    blurrer: &mut Option<blur::Blurrer>,
+    unavailable: &mut bool,
+    gl: &glow::Context,
+    screen_px: [u32; 2],
+    blurs: &[Blur],
+) {
+    if blurs.is_empty() {
+        return;
+    }
+    if blurrer.is_none() && !*unavailable {
+        // SAFETY: the frame's context is current while it is open.
+        match unsafe { blur::Blurrer::new(gl) } {
+            Ok(b) => *blurrer = Some(b),
+            Err(e) => {
+                *unavailable = true;
+                warn!(error = %e, "blur unavailable");
+            }
+        }
+    }
+    if let Some(blurrer) = blurrer {
+        // SAFETY: as above, with the frame's framebuffer bound.
+        if let Err(e) = unsafe { blurrer.apply(gl, screen_px, blurs) } {
+            warn!(error = %e, "blur failed");
+        }
+        reset_gl(gl, screen_px);
+    }
+}
+
 fn reset_gl(gl: &glow::Context, screen: [u32; 2]) {
     use glow::HasContext as _;
     // SAFETY: plain state resets on the current context.
@@ -2975,6 +3237,8 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
         }
         self.manage_on_first_commit(surface);
         self.icon_committed(surface);
+        self.wlr_commit(surface);
+        self.input_popup_commit(surface);
         self.popups.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()
@@ -3240,7 +3504,9 @@ impl<S: Shell + 'static> SeatHandler for Host<S> {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, seat: &Seat<Self>, image: CursorImageStatus) {
+        self.set_cursor(seat, image);
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| self.display.get_client(s.id()).ok());
