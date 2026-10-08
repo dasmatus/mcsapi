@@ -18,9 +18,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod automation;
 mod cursor;
 mod hints;
 mod input;
+mod layer_shell;
+mod security;
 mod toplevel;
 
 use mcsapi::WindowId;
@@ -47,9 +50,7 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_pointer_gestures,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
     delegate_xdg_shell,
-    desktop::{
-        PopupKind, PopupManager, Space, Window, WindowSurfaceType, utils::send_frames_surface_tree,
-    },
+    desktop::{PopupKind, PopupManager, Space, Window, utils::send_frames_surface_tree},
     input::{
         Seat, SeatHandler, SeatState,
         keyboard::{FilterResult, Keycode, Keysym, KeysymHandle, ModifiersState, XkbConfig},
@@ -112,6 +113,7 @@ use crate::{
     RuntimeClient, Shell, a11y, accesskit, blur, egui, text_input::TextInputs,
 };
 use mcsapi_ui::gesture::EguiBridge;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use tracing::{error, warn};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -320,6 +322,9 @@ pub(crate) struct Host<S: Shell> {
     toplevels: toplevel::Toplevels,
     inputs: input::Inputs<S>,
     cursors: cursor::Cursors,
+    layer_shell: layer_shell::LayerShell,
+    automation: automation::Automation,
+    security: security::Security<S>,
     text_inputs: TextInputs,
     popups: PopupManager,
     seat: Seat<Self>,
@@ -402,6 +407,9 @@ struct ClientState {
     /// The role of a runtime client, fixed when the compositor created its
     /// connection; `None` for clients of the public socket.
     role: Option<Role>,
+    /// The sandbox a client connected through, which keeps it from the
+    /// privileged globals (see `security`).
+    security_context: Option<smithay::wayland::security_context::SecurityContext>,
 }
 
 impl ClientData for ClientState {
@@ -582,6 +590,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         },
     )?;
 
+    let primary_selection_state = PrimarySelectionState::new::<Host<S>>(&dh);
     let mut host = Host {
         start: Instant::now(),
         display: dh.clone(),
@@ -594,11 +603,14 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
         _pointer_gestures_state: PointerGesturesState::new::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
-        primary_selection_state: PrimarySelectionState::new::<Host<S>>(&dh),
+        automation: automation::Automation::new::<S>(&dh, &primary_selection_state),
+        primary_selection_state,
         _hints: hints::Hints::new::<S>(&dh),
         toplevels: toplevel::Toplevels::new::<S>(&dh),
         inputs: input::Inputs::new(&dh, event_loop.handle()),
         cursors: cursor::Cursors::new::<S>(&dh),
+        layer_shell: layer_shell::LayerShell::new::<S>(&dh),
+        security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
             TextInputs::global::<S>(&dh);
             TextInputs::default()
@@ -973,7 +985,16 @@ impl<S: Shell> Host<S> {
                 .map_element(layer.window.clone(), g.loc - offset, false);
             self.space.raise_element(&layer.window, false);
         }
-        let reserved = Reserved::of(self.layers.iter().map(|l| l.role));
+        // Runtime panels and layer-shell surfaces both start from the
+        // output's edges, so the larger of the two covers each edge.
+        let panels = Reserved::of(self.layers.iter().map(|l| l.role));
+        let wlr = self.arrange_wlr_layers();
+        let reserved = Reserved {
+            top: panels.top.max(wlr.top),
+            bottom: panels.bottom.max(wlr.bottom),
+            left: panels.left.max(wlr.left),
+            right: panels.right.max(wlr.right),
+        };
         if reserved != self.reserved {
             self.reserved = reserved;
             self.shell.set_reserved(reserved);
@@ -995,17 +1016,6 @@ impl<S: Shell> Host<S> {
     /// The overlay that has the keyboard, if one is mapped.
     fn overlay(&self) -> Option<&Layer> {
         self.layers.iter().rev().find(|l| l.role == Role::Overlay)
-    }
-
-    /// Whether pointer input at the pointer goes to a panel or overlay
-    /// instead of the chrome or windows: always over an overlay, and over a
-    /// panel unless one of the chrome's popups is open (it may overlap).
-    fn pointer_on_layer(&self) -> bool {
-        match self.layer_under() {
-            Some(layer) if layer.role == Role::Overlay => true,
-            Some(_) => !egui::Popup::is_any_open(&self.chrome.ctx),
-            None => false,
-        }
     }
 
     fn close(&mut self, window: WindowId) {
@@ -1103,13 +1113,15 @@ impl<S: Shell> Host<S> {
         self.arrange_layers();
 
         // The keyboard goes to an overlay while one is mapped, then to a
-        // panel that was clicked, then to the shell's focused window.
+        // layer surface that holds it exclusively, then to a panel or layer
+        // surface that was clicked, then to the shell's focused window.
         let focused = self.shell.focused();
         self.keyboard_focus = focused;
         let layer = self
             .overlay()
             .and_then(|l| l.window.toplevel())
             .map(|t| t.wl_surface().clone())
+            .or_else(|| self.wlr_exclusive_keyboard())
             .or_else(|| self.layer_focus.clone());
         let surface = layer.or_else(|| {
             focused.and_then(|id| match self.windows.get(&id) {
@@ -1931,13 +1943,6 @@ impl<S: Shell> Host<S> {
         }
     }
 
-    fn surface_under(&self) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, loc) = self.space.element_under(self.pointer)?;
-        window
-            .surface_under(self.pointer - loc.to_f64(), WindowSurfaceType::ALL)
-            .map(|(surface, offset)| (surface, (offset + loc).to_f64()))
-    }
-
     fn pointer_motion(&mut self, time: u32) {
         let pos = self.egui_pos();
         if self.route == Some(Route::Layer) || (self.route.is_none() && self.pointer_on_layer()) {
@@ -2031,18 +2036,10 @@ impl<S: Shell> Host<S> {
             _ => None,
         };
         if pressed && self.route.is_none() {
-            // A click on a panel that takes the keyboard gives it the
-            // keyboard; a click anywhere else takes it back.
-            let layer = self
-                .pointer_on_layer()
-                .then(|| self.layer_under())
-                .flatten()
-                .map(|l| (l.role, l.window.toplevel().map(|t| t.wl_surface().clone())));
-            let on_layer = layer.is_some();
-            self.layer_focus = match layer {
-                Some((Role::Panel { keyboard: true, .. }, surface)) => surface,
-                _ => None,
-            };
+            // A click on a panel or layer surface that takes the keyboard
+            // gives it the keyboard; a click anywhere else takes it back.
+            let on_layer = self.pointer_on_layer();
+            self.layer_focus = on_layer.then(|| self.layer_click_focus()).flatten();
             if on_layer {
                 self.route = Some(Route::Layer);
                 self.sync();
@@ -2189,12 +2186,12 @@ impl<S: Shell> Host<S> {
                 alt: modifiers.alt,
             },
         };
-        // An overlay gets every key, shell shortcuts included; a panel
-        // holding the keyboard gets what the shell leaves.
+        // An overlay gets every key, shell shortcuts included; a panel or
+        // layer surface holding the keyboard gets what the shell leaves.
         if self.overlay().is_some() {
             return FilterResult::Forward;
         }
-        if self.layer_focus.is_some() {
+        if self.layer_focus.is_some() || self.wlr_exclusive_keyboard().is_some() {
             return match shell_key_route(&mut self.shell, &key, consumed_release) {
                 KeyRoute::Consume => {
                     if pressed {
@@ -2408,6 +2405,7 @@ impl<S: Shell> Host<S> {
                 Some(self.output.clone())
             });
         }
+        self.wlr_send_frames(now);
         if let Some(surface) = self.cursors.surface() {
             send_frames_surface_tree(surface, &self.output, now, Some(Duration::ZERO), |_, _| {
                 Some(self.output.clone())
@@ -2622,6 +2620,13 @@ impl<S: Shell> Host<S> {
             }
         }
 
+        let wlr_below: Vec<_> = [WlrLayer::Background, WlrLayer::Bottom]
+            .into_iter()
+            .flat_map(|layer| layer_shell::wlr_elements(&self.output, renderer, layer))
+            .collect();
+        let wlr_top = layer_shell::wlr_elements(&self.output, renderer, WlrLayer::Top);
+        let wlr_overlay = layer_shell::wlr_elements(&self.output, renderer, WlrLayer::Overlay);
+
         let on_client = self
             .seat
             .get_pointer()
@@ -2634,6 +2639,9 @@ impl<S: Shell> Host<S> {
         frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
         let deco = self.decorations.painter.as_mut().expect("created above");
         paint(&gl, deco, screen_px, &mut background);
+        for elements in &wlr_below {
+            draw_surfaces(&mut frame, elements, scale)?;
+        }
         for (((p, mut decoration), content), elements) in placements
             .iter()
             .zip(decorations)
@@ -2669,12 +2677,12 @@ impl<S: Shell> Host<S> {
                 reset_gl(&gl, screen_px);
             }
         }
-        for elements in &panels {
+        for elements in panels.iter().chain(&wlr_top) {
             draw_surfaces(&mut frame, elements, scale)?;
         }
         let chrome_painter = self.chrome.painter.as_mut().expect("created above");
         paint(&gl, chrome_painter, screen_px, &mut chrome);
-        for elements in &overlays {
+        for elements in overlays.iter().chain(&wlr_overlay) {
             draw_surfaces(&mut frame, elements, scale)?;
         }
         // The arrow's pass also carries texture updates for the shared
@@ -2978,6 +2986,7 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
         }
         self.manage_on_first_commit(surface);
         self.icon_committed(surface);
+        self.wlr_commit(surface);
         self.popups.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()

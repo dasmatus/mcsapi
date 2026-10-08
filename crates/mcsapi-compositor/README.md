@@ -51,7 +51,7 @@ Capture queued after them sees their result. While one runs,
 can refuse to let an agent confirm what only a person should.
 
 Not yet: more than one display on the bare seat, hotplug, direct scanout of
-client buffers, layer-shell, XWayland, popup grabs, linux-dmabuf.
+client buffers, XWayland, popup grabs, linux-dmabuf.
 
 ## Protocols
 
@@ -96,6 +96,25 @@ Idle: `ext_idle_notifier_v1` tells clients when the seat has been idle, and
 `zwp_idle_inhibit_manager_v1` keeps it awake while an inhibiting surface is
 on screen, reported through `Shell::idle_inhibited` (a video player
 playing).
+
+Desktop components from other projects: `zwlr_layer_shell_v1` (bars,
+wallpapers, launchers, notifications such as waybar, swaybg, fuzzel, mako
+and slurp). Background and bottom surfaces sit under windows, top ones with
+runtime panels under the chrome, overlay ones above it; exclusive zones reach
+`Shell::set_reserved` together with runtime panels. A surface that asks for
+the keyboard exclusively on the top or overlay layer gets it, and one that
+asks on demand gets it when clicked, after the shell's shortcuts.
+
+Tools that drive the session: `ext_data_control_manager_v1` and
+`zwlr_data_control_manager_v1` (wl-copy, clipboard managers),
+`zwp_virtual_keyboard_manager_v1` (wtype; keys go straight to the focused
+client) and `zwlr_virtual_pointer_manager_v1` (wayvnc, wlrctl; the same path
+as a mouse, reported to `Shell::input_source` as synthetic).
+
+Sandboxes: `wp_security_context_manager_v1` marks clients that connect
+through a socket a sandbox (Flatpak) opened. They do not see layer-shell,
+data control, the virtual keyboard or pointer, or the security context
+manager itself.
 
 ## Try it
 
