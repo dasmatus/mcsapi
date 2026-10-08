@@ -18,6 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod hints;
+mod toplevel;
+
 use mcsapi::WindowId;
 use smithay::{
     backend::{
@@ -40,7 +43,8 @@ use smithay::{
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     delegate_compositor, delegate_data_device, delegate_output, delegate_pointer_gestures,
-    delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
+    delegate_xdg_shell,
     desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         Seat, SeatHandler, SeatState,
@@ -82,6 +86,9 @@ use smithay::{
             data_device::{
                 ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
                 set_data_device_focus, set_data_device_selection,
+            },
+            primary_selection::{
+                PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
             },
         },
         shell::xdg::{
@@ -302,6 +309,10 @@ pub(crate) struct Host<S: Shell> {
     _pointer_gestures_state: PointerGesturesState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
+    /// `zwp_primary_selection_device_manager_v1`: middle-click paste.
+    primary_selection_state: PrimarySelectionState,
+    _hints: hints::Hints,
+    toplevels: toplevel::Toplevels,
     text_inputs: TextInputs,
     popups: PopupManager,
     seat: Seat<Self>,
@@ -576,6 +587,9 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
         _pointer_gestures_state: PointerGesturesState::new::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
+        primary_selection_state: PrimarySelectionState::new::<Host<S>>(&dh),
+        _hints: hints::Hints::new::<S>(&dh),
+        toplevels: toplevel::Toplevels::new::<S>(&dh),
         text_inputs: {
             TextInputs::global::<S>(&dh);
             TextInputs::default()
@@ -821,8 +835,14 @@ impl<S: Shell> Host<S> {
             .ok()
             .filter(|l| l.to_uppercase().contains("UTF-8"))
             .unwrap_or_else(|| "C.UTF-8".into());
+        // The launch is the user's action, so the window it opens may take
+        // focus (`xdg_activation_v1`); DESKTOP_STARTUP_ID is the older name
+        // GTK 3 also reads.
+        let token = self.toplevels.launch_token();
         let spawned = Process::new(program)
             .args(args)
+            .env("XDG_ACTIVATION_TOKEN", &token)
+            .env("DESKTOP_STARTUP_ID", &token)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env("XDG_SESSION_TYPE", "wayland")
             .env("GDK_BACKEND", "wayland")
@@ -2690,6 +2710,7 @@ impl<S: Shell> Host<S> {
             title.as_deref().unwrap_or_default(),
         );
         self.windows.insert(id, Content::Wayland(window));
+        self.window_mapped(id, &toplevel);
         self.sync();
         if !toplevel.is_initial_configure_sent() {
             toplevel.send_configure();
@@ -2864,6 +2885,7 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
             }
         }
         self.manage_on_first_commit(surface);
+        self.icon_committed(surface);
         self.popups.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()
@@ -2972,6 +2994,10 @@ impl<S: Shell + 'static> XdgShellHandler for Host<S> {
         // dismisses them.
     }
 
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        Host::parent_changed(self, &surface);
+    }
+
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         if let Some((id, _)) = self.wayland_window_of(surface.wl_surface()) {
             self.shell.client_request(id, ClientRequest::Maximize);
@@ -3024,7 +3050,8 @@ impl<S: Shell + 'static> SeatHandler for Host<S> {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| self.display.get_client(s.id()).ok());
-        set_data_device_focus(&self.display, seat, client);
+        set_data_device_focus(&self.display, seat, client.clone());
+        set_primary_focus(&self.display, seat, client);
         self.text_inputs.set_focus(focused.cloned());
         self.text_input_changed();
     }
@@ -3065,6 +3092,12 @@ impl<S: Shell + 'static> SelectionHandler for Host<S> {
 impl<S: Shell + 'static> DataDeviceHandler for Host<S> {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
+    }
+}
+
+impl<S: Shell + 'static> PrimarySelectionHandler for Host<S> {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
     }
 }
 
@@ -3161,5 +3194,6 @@ delegate_xdg_decoration!(@<S: Shell + 'static> Host<S>);
 delegate_shm!(@<S: Shell + 'static> Host<S>);
 delegate_seat!(@<S: Shell + 'static> Host<S>);
 delegate_data_device!(@<S: Shell + 'static> Host<S>);
+delegate_primary_selection!(@<S: Shell + 'static> Host<S>);
 delegate_pointer_gestures!(@<S: Shell + 'static> Host<S>);
 delegate_output!(@<S: Shell + 'static> Host<S>);

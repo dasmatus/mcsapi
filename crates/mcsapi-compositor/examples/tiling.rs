@@ -23,7 +23,7 @@ use std::{collections::BTreeMap, time::Duration};
 use mcsapi::{Desktop, Geometry, WindowId, WorkspaceId};
 use mcsapi_compositor::{
     App, AppId, Apps, Blur, Command, Compositor, Hot, InstanceId, KeyInput, KeyRoute, Keysym,
-    OutputTiming, Placement, Shell, Theme, egui,
+    OutputTiming, Placement, Shell, Theme, WindowHint, egui,
 };
 use mcsapi_runtime::{Manifest, Runtime};
 
@@ -109,6 +109,16 @@ impl Shell for Tiling {
 
     fn set_title(&mut self, window: WindowId, title: &str) {
         self.titles.insert(window, title.to_owned());
+    }
+
+    // A real shell would float dialogs over their parent and show icons in a
+    // task list; this one only logs what clients say.
+    fn window_hint(&mut self, window: WindowId, hint: WindowHint) {
+        tracing::info!(?window, ?hint, "window hint");
+    }
+
+    fn bell(&mut self, window: Option<WindowId>) {
+        tracing::info!(?window, "bell");
     }
 
     fn focus(&mut self, window: WindowId) {
