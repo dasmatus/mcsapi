@@ -232,7 +232,7 @@ fn icon_of(surface: &WlSurface) -> Option<Icon> {
                 let mut rgba = Vec::with_capacity(row_bytes * rows);
                 for row in pool[offset..end].chunks_exact(stride) {
                     // Little-endian ARGB8888 is B, G, R, A in memory.
-                    for p in row[..row_bytes].chunks_exact(4) {
+                    for p in row[..row_bytes].as_chunks::<4>().0 {
                         rgba.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
                     }
                 }
