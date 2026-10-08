@@ -125,6 +125,10 @@ impl Shell for Tiling {
         tracing::info!(inhibited, "idle inhibited");
     }
 
+    fn session_locked(&mut self, locked: bool) {
+        tracing::info!(locked, "session locked");
+    }
+
     fn focus(&mut self, window: WindowId) {
         let _ = self.desktop.focus(window);
     }

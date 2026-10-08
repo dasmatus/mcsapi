@@ -23,6 +23,7 @@ mod cursor;
 mod hints;
 mod input;
 mod layer_shell;
+mod lock;
 mod security;
 mod toplevel;
 
@@ -323,6 +324,7 @@ pub(crate) struct Host<S: Shell> {
     inputs: input::Inputs<S>,
     cursors: cursor::Cursors,
     layer_shell: layer_shell::LayerShell,
+    lock: lock::Lock,
     automation: automation::Automation,
     security: security::Security<S>,
     text_inputs: TextInputs,
@@ -610,6 +612,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         inputs: input::Inputs::new(&dh, event_loop.handle()),
         cursors: cursor::Cursors::new::<S>(&dh),
         layer_shell: layer_shell::LayerShell::new::<S>(&dh),
+        lock: lock::Lock::new::<S>(&dh),
         security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
             TextInputs::global::<S>(&dh);
@@ -989,6 +992,8 @@ impl<S: Shell> Host<S> {
         // output's edges, so the larger of the two covers each edge.
         let panels = Reserved::of(self.layers.iter().map(|l| l.role));
         let wlr = self.arrange_wlr_layers();
+        self.lock
+            .resize((self.backend.size().w, self.backend.size().h));
         let reserved = Reserved {
             top: panels.top.max(wlr.top),
             bottom: panels.bottom.max(wlr.bottom),
@@ -1123,12 +1128,16 @@ impl<S: Shell> Host<S> {
             .map(|t| t.wl_surface().clone())
             .or_else(|| self.wlr_exclusive_keyboard())
             .or_else(|| self.layer_focus.clone());
-        let surface = layer.or_else(|| {
-            focused.and_then(|id| match self.windows.get(&id) {
-                Some(Content::Wayland(w)) => w.toplevel().map(|t| t.wl_surface().clone()),
-                _ => None,
+        let surface = if self.lock.locked {
+            self.lock.keyboard()
+        } else {
+            layer.or_else(|| {
+                focused.and_then(|id| match self.windows.get(&id) {
+                    Some(Content::Wayland(w)) => w.toplevel().map(|t| t.wl_surface().clone()),
+                    _ => None,
+                })
             })
-        });
+        };
         if surface != self.keyboard_surface {
             self.keyboard_surface = surface.clone();
             if let Some(keyboard) = self.seat.get_keyboard() {
@@ -1498,6 +1507,10 @@ impl<S: Shell> Host<S> {
 
     /// Performs an accessibility action on a node of the merged tree.
     fn act(&mut self, node: accesskit::NodeId, action: accesskit::Action, value: Option<String>) {
+        // What the lock hides cannot be acted on either.
+        if self.lock.locked {
+            return;
+        }
         use a11y::Source;
         let Some(source) = self.merger.source(node) else {
             return;
@@ -1825,7 +1838,9 @@ impl<S: Shell> Host<S> {
         if event.is_begin() {
             self.end_scroll();
             self.gesture_bridge = EguiBridge::default();
-            self.gesture = Some(if self.shell.gesture(&event) {
+            self.gesture = Some(if self.lock.locked {
+                GestureRoute::Client
+            } else if self.shell.gesture(&event) {
                 GestureRoute::Shell
             } else if self.chrome_wants_pointer() {
                 GestureRoute::Chrome
@@ -2169,6 +2184,10 @@ impl<S: Shell> Host<S> {
                 return FilterResult::Intercept(());
             }
         }
+        // A locked session's keys all go to the locker.
+        if self.lock.locked {
+            return FilterResult::Forward;
+        }
         let sym = handle
             .raw_latin_sym_or_raw_current_sym()
             .unwrap_or(modified);
@@ -2406,6 +2425,7 @@ impl<S: Shell> Host<S> {
             });
         }
         self.wlr_send_frames(now);
+        self.lock.send_frames(&self.output, now);
         if let Some(surface) = self.cursors.surface() {
             send_frames_surface_tree(surface, &self.output, now, Some(Duration::ZERO), |_, _| {
                 Some(self.output.clone())
@@ -2626,6 +2646,8 @@ impl<S: Shell> Host<S> {
             .collect();
         let wlr_top = layer_shell::wlr_elements(&self.output, renderer, WlrLayer::Top);
         let wlr_overlay = layer_shell::wlr_elements(&self.output, renderer, WlrLayer::Overlay);
+        let locked = self.lock.locked;
+        let lock_elements = self.lock.elements(renderer);
 
         let on_client = self
             .seat
@@ -2685,6 +2707,12 @@ impl<S: Shell> Host<S> {
         for elements in overlays.iter().chain(&wlr_overlay) {
             draw_surfaces(&mut frame, elements, scale)?;
         }
+        // Locked: the session is drawn as usual, so egui's passes keep
+        // their textures in step, then covered.
+        if locked {
+            frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
+            draw_surfaces(&mut frame, &lock_elements, scale)?;
+        }
         // The arrow's pass also carries texture updates for the shared
         // decorations context, so it is painted, empty, when unused.
         if !matches!(cursor_drawn, cursor::Drawn::Painted) {
@@ -2711,6 +2739,9 @@ impl<S: Shell> Host<S> {
         }
         let capture = (!self.captures.is_empty()).then(|| read_frame(&gl, screen_px));
         let _sync = frame.finish()?;
+        if locked {
+            self.lock.drawn();
+        }
         drop(framebuffer);
         if offscreen {
             self.present(size)?;

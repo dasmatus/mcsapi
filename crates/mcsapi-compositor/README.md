@@ -111,10 +111,16 @@ Tools that drive the session: `ext_data_control_manager_v1` and
 client) and `zwlr_virtual_pointer_manager_v1` (wayvnc, wlrctl; the same path
 as a mouse, reported to `Shell::input_source` as synthetic).
 
+Screen lockers: `ext_session_lock_v1` (swaylock, hyprlock). While locked,
+only the locker's surface is shown and every key and pointer event goes to
+it; the shell's shortcuts, gestures and chrome get none, and
+`Shell::session_locked` says when it starts and ends. A locker that dies
+leaves the session locked until another one unlocks it.
+
 Sandboxes: `wp_security_context_manager_v1` marks clients that connect
 through a socket a sandbox (Flatpak) opened. They do not see layer-shell,
-data control, the virtual keyboard or pointer, or the security context
-manager itself.
+data control, the virtual keyboard or pointer, the session lock, or the
+security context manager itself.
 
 ## Try it
 

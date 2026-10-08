@@ -636,6 +636,14 @@ pub trait Shell: 'static {
     /// after a while of no input should wait while this is `true`.
     fn idle_inhibited(&mut self, _inhibited: bool) {}
 
+    /// A screen locker (swaylock, through `ext_session_lock_v1`) locked the
+    /// session, or unlocked it. While locked the compositor shows only the
+    /// locker's surface and sends it every key and pointer event; the
+    /// shell's shortcuts, gestures and chrome get none. If the locker dies
+    /// without unlocking, the session stays locked until another locker
+    /// unlocks it.
+    fn session_locked(&mut self, _locked: bool) {}
+
     /// Whether `window` may take the keys the shell otherwise takes
     /// (`zwp_keyboard_shortcuts_inhibit_manager_v1`) while it has the
     /// keyboard: a virtual machine or remote desktop viewer passes Super and

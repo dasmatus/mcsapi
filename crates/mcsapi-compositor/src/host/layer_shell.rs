@@ -15,6 +15,9 @@
 //! asks for it exclusively; one that takes it on demand gets it when
 //! clicked, as a runtime panel that takes the keyboard does. The shell's
 //! shortcuts still come first for both.
+//!
+//! While the session is locked (see `lock`) all of this gives way to the
+//! locker's surface.
 
 use smithay::{
     backend::renderer::{
@@ -97,6 +100,9 @@ impl<S: Shell + 'static> Host<S> {
     /// Whether pointer input at the pointer goes to a panel, overlay or
     /// layer-shell surface instead of the chrome or windows.
     pub(super) fn pointer_on_layer(&self) -> bool {
+        if self.lock.locked {
+            return true;
+        }
         let popup = || egui::Popup::is_any_open(&self.chrome.ctx);
         match self.layer_hit() {
             Some(Hit::Runtime(layer)) if layer.role == Role::Overlay => true,
@@ -115,6 +121,9 @@ impl<S: Shell + 'static> Host<S> {
     /// runtime panel that takes it, or a layer-shell surface that asks for
     /// it.
     pub(super) fn layer_click_focus(&self) -> Option<WlSurface> {
+        if self.lock.locked {
+            return self.lock.keyboard();
+        }
         match self.layer_hit()? {
             Hit::Runtime(Layer {
                 role: Role::Panel { keyboard: true, .. },
@@ -130,6 +139,9 @@ impl<S: Shell + 'static> Host<S> {
     /// The topmost surface under the pointer, of any client, in stacking
     /// order.
     pub(super) fn surface_under(&self) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.lock.locked {
+            return self.lock.surface_under(self.pointer);
+        }
         let wlr = |layers: &[WlrLayer]| self.wlr_under(layers).map(|(_, s, at)| (s, at));
         let space = || {
             let (window, loc) = self.space.element_under(self.pointer)?;

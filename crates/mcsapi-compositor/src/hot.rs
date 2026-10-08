@@ -221,6 +221,10 @@ impl<S: Shell> Shell for Hot<S> {
         hot!(S::idle_inhibited, &mut self.0, inhibited)
     }
 
+    fn session_locked(&mut self, locked: bool) {
+        hot!(S::session_locked, &mut self.0, locked)
+    }
+
     fn inhibit_shortcuts(&mut self, window: WindowId) -> bool {
         hot!(S::inhibit_shortcuts, &mut self.0, window)
     }
