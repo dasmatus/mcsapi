@@ -26,6 +26,10 @@
 //! feature, on the bare seat: DRM/KMS output, libinput input and seat access
 //! through libseat. The bare seat is picked when there is no session to nest
 //! in, or with `MCSAPI_BACKEND=kms`; `MCSAPI_BACKEND=winit` forces nesting.
+//! On the bare seat, clients that draw on the GPU hand over their buffers as
+//! dma-bufs (`zwp_linux_dmabuf_v1`), with explicit fences
+//! (`wp_linux_drm_syncobj_v1`) where the kernel and driver support them;
+//! nested, every client draws into shared memory.
 //!
 //! ```no_run
 //! use mcsapi::{Desktop, WindowId, WorkspaceId};
