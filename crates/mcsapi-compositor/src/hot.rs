@@ -9,7 +9,7 @@ use mcsapi::WindowId;
 
 use crate::{
     Blur, Capture, ClientRequest, Command, KeyInput, KeyRoute, OutputTiming, Placement, Press,
-    Shell, TextField, Theme, WindowHint, a11y, accesskit, egui,
+    Shell, TextField, Theme, WindowHint, WorkspaceInfo, a11y, accesskit, egui,
 };
 
 /// Calls a shell method through Subsecond's jump table when the `hotpatch`
@@ -223,6 +223,14 @@ impl<S: Shell> Shell for Hot<S> {
 
     fn session_locked(&mut self, locked: bool) {
         hot!(S::session_locked, &mut self.0, locked)
+    }
+
+    fn workspaces(&self) -> Vec<WorkspaceInfo> {
+        hot!(S::workspaces, &self.0)
+    }
+
+    fn activate_workspace(&mut self, id: &str) {
+        hot!(S::activate_workspace, &mut self.0, id)
     }
 
     fn inhibit_shortcuts(&mut self, window: WindowId) -> bool {

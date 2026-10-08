@@ -173,6 +173,35 @@ pub struct Icon {
     pub image: Option<IconImage>,
 }
 
+/// A workspace as pagers outside the shell see it (`ext_workspace_v1`).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct WorkspaceInfo {
+    /// Stays the same while the workspace exists; how
+    /// [`Shell::activate_workspace`] names it.
+    pub id: String,
+    /// What the user calls it.
+    pub name: String,
+    /// Whether it is the one shown.
+    pub active: bool,
+    /// Whether one of its windows wants attention.
+    pub urgent: bool,
+    /// Whether pagers should leave it out.
+    pub hidden: bool,
+}
+
+impl WorkspaceInfo {
+    /// A workspace that wants no attention and is not hidden.
+    pub fn new(id: impl Into<String>, name: impl Into<String>, active: bool) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            active,
+            ..Self::default()
+        }
+    }
+}
+
 /// A square icon image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IconImage {
@@ -643,6 +672,16 @@ pub trait Shell: 'static {
     /// without unlocking, the session stays locked until another locker
     /// unlocks it.
     fn session_locked(&mut self, _locked: bool) {}
+
+    /// The shell's workspaces in order, for pagers outside it
+    /// (`ext_workspace_v1`, waybar's workspaces module). Asked every frame
+    /// while a pager is connected; none by default.
+    fn workspaces(&self) -> Vec<WorkspaceInfo> {
+        Vec::new()
+    }
+
+    /// A pager asked to show the workspace with this [`WorkspaceInfo::id`].
+    fn activate_workspace(&mut self, _id: &str) {}
 
     /// Whether `window` may take the keys the shell otherwise takes
     /// (`zwp_keyboard_shortcuts_inhibit_manager_v1`) while it has the

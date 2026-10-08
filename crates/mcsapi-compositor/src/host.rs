@@ -20,12 +20,14 @@ use std::{
 
 mod automation;
 mod cursor;
+mod foreign;
 mod hints;
 mod input;
 mod layer_shell;
 mod lock;
 mod security;
 mod toplevel;
+mod workspaces;
 
 use mcsapi::WindowId;
 use smithay::{
@@ -325,6 +327,8 @@ pub(crate) struct Host<S: Shell> {
     cursors: cursor::Cursors,
     layer_shell: layer_shell::LayerShell,
     lock: lock::Lock,
+    foreign: foreign::Foreign,
+    workspaces: workspaces::Workspaces,
     automation: automation::Automation,
     security: security::Security<S>,
     text_inputs: TextInputs,
@@ -613,6 +617,8 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         cursors: cursor::Cursors::new::<S>(&dh),
         layer_shell: layer_shell::LayerShell::new::<S>(&dh),
         lock: lock::Lock::new::<S>(&dh),
+        foreign: foreign::Foreign::new::<S>(&dh),
+        workspaces: workspaces::Workspaces::new::<S>(&dh),
         security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
             TextInputs::global::<S>(&dh);
@@ -1145,6 +1151,8 @@ impl<S: Shell> Host<S> {
             }
         }
         self.update_idle_inhibit();
+        self.update_foreign();
+        self.update_workspaces();
     }
 
     /// Ends a press that was going to content. The rest of it goes to the

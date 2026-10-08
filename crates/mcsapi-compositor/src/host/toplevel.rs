@@ -144,7 +144,7 @@ impl<S: Shell + 'static> Host<S> {
     }
 
     /// The window `toplevel`'s parent surface belongs to, if it is mapped.
-    fn parent_of(&self, toplevel: &ToplevelSurface) -> Option<WindowId> {
+    pub(super) fn parent_of(&self, toplevel: &ToplevelSurface) -> Option<WindowId> {
         let parent = toplevel.parent()?;
         self.wayland_window_of(&parent).map(|(id, _)| id)
     }

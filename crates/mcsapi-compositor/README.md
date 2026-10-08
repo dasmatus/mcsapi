@@ -111,6 +111,14 @@ Tools that drive the session: `ext_data_control_manager_v1` and
 client) and `zwlr_virtual_pointer_manager_v1` (wayvnc, wlrctl; the same path
 as a mouse, reported to `Shell::input_source` as synthetic).
 
+Window lists and pagers: `ext_foreign_toplevel_list_v1` and
+`zwlr_foreign_toplevel_manager_v1` list every window, Wayland and in-process,
+with title, app ID, parent, focus and maximized state, and let a taskbar
+focus (`Shell::activate`), close, maximize or minimize one
+(`Shell::client_request`). `ext_workspace_manager_v1` shows what
+`Shell::workspaces` lists and passes activation to
+`Shell::activate_workspace`.
+
 Screen lockers: `ext_session_lock_v1` (swaylock, hyprlock). While locked,
 only the locker's surface is shown and every key and pointer event goes to
 it; the shell's shortcuts, gestures and chrome get none, and
@@ -119,8 +127,8 @@ leaves the session locked until another one unlocks it.
 
 Sandboxes: `wp_security_context_manager_v1` marks clients that connect
 through a socket a sandbox (Flatpak) opened. They do not see layer-shell,
-data control, the virtual keyboard or pointer, the session lock, or the
-security context manager itself.
+data control, the virtual keyboard or pointer, the session lock, the window
+lists and workspaces, or the security context manager itself.
 
 ## Try it
 

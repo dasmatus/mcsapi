@@ -23,7 +23,7 @@ use std::{collections::BTreeMap, time::Duration};
 use mcsapi::{Desktop, Geometry, WindowId, WorkspaceId};
 use mcsapi_compositor::{
     App, AppId, Apps, Blur, Command, Compositor, Hot, InstanceId, KeyInput, KeyRoute, Keysym,
-    OutputTiming, Placement, Shell, Theme, WindowHint, egui,
+    OutputTiming, Placement, Shell, Theme, WindowHint, WorkspaceInfo, egui,
 };
 use mcsapi_runtime::{Manifest, Runtime};
 
@@ -127,6 +127,27 @@ impl Shell for Tiling {
 
     fn session_locked(&mut self, locked: bool) {
         tracing::info!(locked, "session locked");
+    }
+
+    fn workspaces(&self) -> Vec<WorkspaceInfo> {
+        let active = self.desktop.active().id();
+        self.desktop
+            .workspaces()
+            .map(|w| {
+                let n = w.id().get().to_string();
+                WorkspaceInfo::new(n.clone(), n, w.id() == active)
+            })
+            .collect()
+    }
+
+    fn activate_workspace(&mut self, id: &str) {
+        if let Some(ws) = id.parse().ok().and_then(WorkspaceId::new) {
+            let _ = self.desktop.switch_to(ws);
+        }
+    }
+
+    fn client_request(&mut self, window: WindowId, request: mcsapi_compositor::ClientRequest) {
+        tracing::info!(?window, ?request, "client request");
     }
 
     fn focus(&mut self, window: WindowId) {
