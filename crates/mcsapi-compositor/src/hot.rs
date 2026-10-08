@@ -9,7 +9,7 @@ use mcsapi::WindowId;
 
 use crate::{
     Blur, Capture, ClientRequest, Command, KeyInput, KeyRoute, OutputTiming, Placement, Press,
-    Shell, TextField, Theme, a11y, accesskit, egui,
+    Shell, TextField, Theme, WindowHint, a11y, accesskit, egui,
 };
 
 /// Calls a shell method through Subsecond's jump table when the `hotpatch`
@@ -203,6 +203,18 @@ impl<S: Shell> Shell for Hot<S> {
 
     fn text_input(&mut self, field: Option<TextField>) {
         hot!(S::text_input, &mut self.0, field)
+    }
+
+    fn window_hint(&mut self, window: WindowId, hint: WindowHint) {
+        hot!(S::window_hint, &mut self.0, window, hint)
+    }
+
+    fn bell(&mut self, window: Option<WindowId>) {
+        hot!(S::bell, &mut self.0, window)
+    }
+
+    fn activate(&mut self, window: WindowId) {
+        hot!(S::activate, &mut self.0, window)
     }
 }
 

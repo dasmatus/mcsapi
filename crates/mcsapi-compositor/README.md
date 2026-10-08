@@ -12,9 +12,7 @@ Windows come from two places, and get the same decorations, tiling and focus:
 - **In-process apps**: `mcsapi_ui::App`s registered with `mcsapi-runtime`,
   provided through the `Apps` trait (for example the derisk core apps).
 
-Supported today: xdg-shell toplevels and popups, xdg-decoration, wl_shm,
-seat (keyboard and pointer), data device (clipboard), wl_output/xdg-output.
-The session runs nested in a window of the current X11 or Wayland session
+Wayland protocols are listed under [Protocols](#protocols). The session runs nested in a window of the current X11 or Wayland session
 (Smithay's winit backend, GLES renderer, egui painted with `egui_glow`), or,
 with the `kms` feature, on the bare seat: the first connected display at its
 preferred mode through DRM/KMS and GBM, input from libinput, and the GPU and
@@ -54,6 +52,33 @@ can refuse to let an agent confirm what only a person should.
 
 Not yet: more than one display on the bare seat, hotplug, direct scanout of
 client buffers, layer-shell, XWayland, popup grabs, linux-dmabuf.
+
+## Protocols
+
+Core and windows: `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wl_seat`
+(keyboard and pointer), `wl_output` with `zxdg_output_manager_v1`,
+`xdg_wm_base` (toplevels and popups), `zxdg_decoration_manager_v1` (always
+server-side).
+
+Buffers and surfaces: `wp_viewporter`, `wp_fractional_scale_v1` (every
+surface is told scale 1, which is what the compositor draws at),
+`wp_single_pixel_buffer_v1`, `wp_alpha_modifier_v1`, and the hints
+`wp_content_type_v1` and `wp_tearing_control_v1`, recorded per surface; frames
+stay in step with the refresh either way.
+
+Window hints, passed to `Shell::window_hint`: parents from
+`xdg_toplevel.set_parent` and `zxdg_exporter_v2`/`zxdg_importer_v2`
+(xdg-foreign), modal dialogs from `xdg_wm_dialog_v1`, icons from
+`xdg_toplevel_icon_manager_v1`, tags and descriptions from
+`xdg_toplevel_tag_manager_v1`. `xdg_system_bell_v1` rings `Shell::bell`.
+`xdg_activation_v1` reaches `Shell::activate` only with a token the client
+that had the keyboard asked for, or the one a launch puts in
+`XDG_ACTIVATION_TOKEN`, so windows cannot steal focus.
+
+Input and clipboard: `wl_data_device_manager` (clipboard and drag and drop),
+`zwp_primary_selection_device_manager_v1` (middle-click paste),
+`zwp_pointer_gestures_v1`, `zwp_text_input_manager_v3` (see
+`Shell::text_input`).
 
 ## Try it
 
