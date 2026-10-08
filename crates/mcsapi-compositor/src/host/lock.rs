@@ -65,6 +65,11 @@ impl Lock {
             .map(LockSurface::wl_surface)
     }
 
+    /// The locker's surface, locked or not.
+    pub(super) fn mapped(&self) -> Option<&WlSurface> {
+        self.surface.as_ref().map(LockSurface::wl_surface)
+    }
+
     /// The locker's surface under `pointer`.
     pub(super) fn surface_under(
         &self,

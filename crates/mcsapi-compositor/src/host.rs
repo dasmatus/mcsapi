@@ -29,6 +29,9 @@ mod input_method;
 mod layer_shell;
 mod lock;
 mod security;
+mod timing;
+#[cfg(feature = "kms")]
+pub(crate) use timing::refresh;
 mod toplevel;
 mod workspaces;
 
@@ -362,6 +365,7 @@ pub(crate) struct Host<S: Shell> {
     workspaces: workspaces::Workspaces,
     automation: automation::Automation,
     input_method: input_method::InputMethod,
+    timing: timing::Timing,
     security: security::Security<S>,
     text_inputs: TextInputs,
     popups: PopupManager,
@@ -698,6 +702,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         screen_capture: capture::Captures::new::<S>(&dh),
         workspaces: workspaces::Workspaces::new::<S>(&dh),
         input_method: input_method::InputMethod::new::<S>(&dh),
+        timing: timing::Timing::new::<S>(&dh),
         security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
             TextInputs::global::<S>(&dh);
@@ -781,10 +786,11 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
             host.input(event);
             host.run_commands();
         })?;
-        handle.insert_source(sources.drm, |event, _, host| match event {
+        handle.insert_source(sources.drm, |event, metadata, host| match event {
             DrmEvent::VBlank(crtc) => {
+                let now = host.timing.clock.now();
                 if let Backend::Kms(k) = &mut host.backend {
-                    k.vblank(crtc);
+                    k.vblank(crtc, metadata.take(), now);
                 }
             }
             DrmEvent::Error(e) => error!(error = %e, "DRM error"),
@@ -2494,6 +2500,7 @@ impl<S: Shell> Host<S> {
             app_cursor.unwrap_or_default()
         });
 
+        self.take_presentation_feedback();
         let drawn = self.draw(
             size,
             &placements,
@@ -2504,6 +2511,7 @@ impl<S: Shell> Host<S> {
             chrome,
             cursor,
         );
+        self.frame_drawn(drawn.is_ok());
         let capture = match drawn {
             Ok(capture) => capture.map(Ok),
             Err(e) => {
@@ -2979,7 +2987,7 @@ impl<S: Shell> Host<S> {
                 // where the plane takes no fence. Nothing relies on the
                 // driver ordering the flip after the drawing by itself.
                 k.surface.queue_buffer(Some(sync), Some(vec![full]), ())?;
-                k.queued();
+                k.queued(self.timing.pending.take());
             }
         }
         Ok(())

@@ -128,6 +128,12 @@ focus (`Shell::activate`), close, maximize or minimize one
 `Shell::workspaces` lists and passes activation to
 `Shell::activate_workspace`.
 
+Frame timing: `wp_presentation` reports when a commit reached the screen,
+on the bare seat with the vblank's timestamp and counter; `wp_fifo_manager_v1`
+and `wp_commit_timing_manager_v1` (Mesa's Vulkan FIFO mode, video players)
+hold commits until the previous one was shown or the requested time. A
+hidden window's FIFO barriers still clear every frame.
+
 Screen capture: `ext_image_copy_capture_manager_v1` with output and window
 sources (`ext_output_image_capture_source_manager_v1`,
 `ext_foreign_toplevel_image_capture_source_manager_v1`), and
