@@ -112,6 +112,21 @@ use smithay::{
     },
 };
 
+#[cfg(feature = "kms")]
+use smithay::{
+    backend::{
+        allocator::{Buffer as _, dmabuf::Dmabuf},
+        renderer::ImportDma,
+    },
+    delegate_dmabuf, delegate_drm_syncobj,
+    reexports::calloop::{EventSource, LoopHandle},
+    wayland::{
+        compositor::{BufferAssignment, SurfaceAttributes, add_blocker, add_pre_commit_hook},
+        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier, get_dmabuf},
+        drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
+    },
+};
+
 use self::input::TabletInput;
 use crate::{
     Apps, Blur, Capture, ClientRequest, Command, Compositor, GestureEvent, Input, InstanceId, Job,
@@ -322,6 +337,18 @@ pub(crate) struct Host<S: Shell> {
     _pointer_gestures_state: PointerGesturesState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
+    /// `zwp_linux_dmabuf_v1`, whose global exists only on the bare seat.
+    #[cfg(feature = "kms")]
+    dmabuf_state: DmabufState,
+    #[cfg(feature = "kms")]
+    dmabuf_global: Option<DmabufGlobal>,
+    /// `wp_linux_drm_syncobj_v1`, where the device supports it (see
+    /// `Kms::syncobj_device`).
+    #[cfg(feature = "kms")]
+    syncobj_state: Option<DrmSyncobjState>,
+    /// For the sources that wake a commit waiting on its buffer's fences.
+    #[cfg(feature = "kms")]
+    loop_handle: LoopHandle<'static, Self>,
     /// `zwp_primary_selection_device_manager_v1`: middle-click paste.
     primary_selection_state: PrimarySelectionState,
     _hints: hints::Hints,
@@ -472,7 +499,7 @@ impl Backend {
     }
 
     /// Whether a frame may be drawn now: on the bare seat, only while the
-    /// seat is ours and the last frame has reached the screen.
+    /// seat is ours and fewer than two frames wait for the screen.
     fn can_draw(&self) -> bool {
         match self {
             Self::Winit(_) => true,
@@ -601,6 +628,34 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         },
     )?;
 
+    // Buffers from the GPU, and explicit fences for them, on the bare seat
+    // only: the feedback names the DRM device clients should allocate on,
+    // and the nested window has none.
+    #[cfg(feature = "kms")]
+    let mut dmabuf_state = DmabufState::new();
+    #[cfg(feature = "kms")]
+    let (dmabuf_global, syncobj_state) = match &backend {
+        Backend::Kms(k) => {
+            let global = match k.dmabuf_feedback() {
+                Ok(feedback) => Some(
+                    dmabuf_state.create_global_with_default_feedback::<Host<S>>(&dh, &feedback),
+                ),
+                // Clients still draw into shared memory, in software.
+                Err(e) => {
+                    warn!(error = %e, "cannot offer dma-buf buffers");
+                    None
+                }
+            };
+            // The protocol only carries fences for dma-buf buffers.
+            let syncobj = global
+                .as_ref()
+                .and(k.syncobj_device())
+                .map(|device| DrmSyncobjState::new::<Host<S>>(&dh, device));
+            (global, syncobj)
+        }
+        _ => (None, None),
+    };
+
     let primary_selection_state = PrimarySelectionState::new::<Host<S>>(&dh);
     let mut host = Host {
         start: Instant::now(),
@@ -614,6 +669,14 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         _output_manager_state: OutputManagerState::new_with_xdg_output::<Host<S>>(&dh),
         _pointer_gestures_state: PointerGesturesState::new::<Host<S>>(&dh),
         data_device_state: DataDeviceState::new::<Host<S>>(&dh),
+        #[cfg(feature = "kms")]
+        dmabuf_state,
+        #[cfg(feature = "kms")]
+        dmabuf_global,
+        #[cfg(feature = "kms")]
+        syncobj_state,
+        #[cfg(feature = "kms")]
+        loop_handle: event_loop.handle(),
         automation: automation::Automation::new::<S>(&dh, &primary_selection_state),
         primary_selection_state,
         _hints: {
@@ -2793,9 +2856,14 @@ impl<S: Shell> Host<S> {
         }
         let deco = self.decorations.painter.as_mut().expect("created above");
         paint(&gl, deco, screen_px, &mut cursor);
+        // Held with the frame's other client buffers below.
+        let mut cursor_elements = Vec::new();
         match cursor_drawn {
             cursor::Drawn::Hidden | cursor::Drawn::Painted => {}
-            cursor::Drawn::Surface(elements) => draw_surfaces(&mut frame, &elements, scale)?,
+            cursor::Drawn::Surface(elements) => {
+                draw_surfaces(&mut frame, &elements, scale)?;
+                cursor_elements = elements;
+            }
             cursor::Drawn::Image { texture, at, size } => {
                 let dst = Rectangle::new(at, size);
                 Frame::render_texture_from_to(
@@ -2812,11 +2880,34 @@ impl<S: Shell> Host<S> {
         }
         let with_cursor = (!self.captures.is_empty() || self.screen_capture.wants(true))
             .then(|| read_frame(&gl, screen_px));
+        // Not waited on: offscreen, the copy to the screen reads this frame
+        // on the same context after it, and the fence that copy ends with
+        // covers both.
         let _sync = frame.finish()?;
         if locked {
             self.lock.drawn();
         }
         drop(framebuffer);
+        // The GPU may still be reading the client buffers; they stay held
+        // until the frame is on screen (see `Kms::in_flight`). Before the
+        // copy to the screen, so a frame that then fails to reach it does
+        // not release them early either.
+        #[cfg(feature = "kms")]
+        if let Backend::Kms(k) = &mut self.backend {
+            let layers = wlr_below.into_iter().chain(wlr_top).chain(wlr_overlay);
+            k.in_flight.extend(
+                surfaces
+                    .into_iter()
+                    .chain(layers)
+                    .map(|(_, elements)| elements)
+                    .chain(panels)
+                    .chain(overlays)
+                    .chain([lock_elements, input_popups, cursor_elements])
+                    .flatten(),
+            );
+        }
+        #[cfg(not(feature = "kms"))]
+        drop(cursor_elements);
         if bare.is_some() || with_cursor.is_some() {
             self.deliver_captures(bare.as_ref(), with_cursor.as_ref());
         }
@@ -2877,8 +2968,12 @@ impl<S: Shell> Host<S> {
                 )?;
                 let sync = frame.finish()?;
                 drop(framebuffer);
+                // The fence goes with the buffer: the flip waits on it in
+                // the kernel (`IN_FENCE_FD`), or Smithay waits on it here
+                // where the plane takes no fence. Nothing relies on the
+                // driver ordering the flip after the drawing by itself.
                 k.surface.queue_buffer(Some(sync), Some(vec![full]), ())?;
-                k.frame_pending = true;
+                k.queued();
             }
         }
         Ok(())
@@ -3107,6 +3202,16 @@ impl<S: Shell + 'static> CompositorHandler for Host<S> {
             .compositor_state
     }
 
+    #[cfg(feature = "kms")]
+    fn new_surface(&mut self, surface: &WlSurface) {
+        // Without the dma-buf global no buffer can carry a fence.
+        if self.dmabuf_global.is_some() {
+            add_pre_commit_hook::<Self, _>(surface, |host, _, surface| {
+                host.wait_for_buffer(surface);
+            });
+        }
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
@@ -3270,6 +3375,111 @@ impl<S: Shell + 'static> XdgDecorationHandler for Host<S> {
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         self.new_decoration(toplevel);
+    }
+}
+
+#[cfg(feature = "kms")]
+impl<S: Shell + 'static> Host<S> {
+    /// Holds back a commit whose new dma-buf the client's GPU has not
+    /// finished drawing, until it has: the explicit acquire point when the
+    /// client sent one, else the buffer's implicit fences. Drawing it
+    /// earlier would sample a half-drawn frame where the driver does not
+    /// wait on the fences itself, or stall the compositor's whole frame on
+    /// one client where it does.
+    fn wait_for_buffer(&mut self, surface: &WlSurface) {
+        let (acquire, dmabuf) = with_states(surface, |states| {
+            let acquire = states
+                .cached_state
+                .get::<DrmSyncobjCachedState>()
+                .pending()
+                .acquire_point
+                .clone();
+            let dmabuf = match &states
+                .cached_state
+                .get::<SurfaceAttributes>()
+                .pending()
+                .buffer
+            {
+                Some(BufferAssignment::NewBuffer(buffer)) => get_dmabuf(buffer).ok().cloned(),
+                _ => None,
+            };
+            (acquire, dmabuf)
+        });
+        let (Some(dmabuf), Some(client)) = (dmabuf, surface.client()) else {
+            return;
+        };
+        if let Some(acquire) = acquire {
+            match acquire.generate_blocker() {
+                Ok((blocker, source)) => {
+                    if self.unblock_when(source, client.clone()) {
+                        add_blocker(surface, blocker);
+                        return;
+                    }
+                }
+                // Explicit sync is only offered where this works; if it
+                // still fails, fall back to the implicit fences below.
+                Err(e) => warn!(error = %e, "cannot wait on an acquire point"),
+            }
+        }
+        // `Err` here means every fence has already signalled.
+        if let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ)
+            && self.unblock_when(source, client)
+        {
+            add_blocker(surface, blocker);
+        }
+    }
+
+    /// Re-evaluates `client`'s blocked commits once `source` fires; false
+    /// if the source could not be put on the loop.
+    fn unblock_when<Src>(&self, source: Src, client: Client) -> bool
+    where
+        Src: EventSource<Event = (), Ret = io::Result<()>> + 'static,
+    {
+        let inserted = self.loop_handle.insert_source(source, move |_, _, host| {
+            let dh = host.display.clone();
+            host.client_compositor_state(&client)
+                .blocker_cleared(host, &dh);
+            Ok(())
+        });
+        if let Err(e) = &inserted {
+            warn!(error = %e.error, "cannot wait on a buffer's fence");
+        }
+        inserted.is_ok()
+    }
+}
+
+#[cfg(feature = "kms")]
+impl<S: Shell + 'static> DmabufHandler for Host<S> {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    /// Imports the buffer into the renderer as it is created, so a client
+    /// whose buffer the GPU cannot sample learns now (and can try another
+    /// format or modifier) rather than showing nothing later. The renderer
+    /// keeps the import for when the buffer is drawn.
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        match self.backend.renderer().import_dmabuf(&dmabuf, None) {
+            Ok(_) => {
+                let _ = notifier.successful::<Self>();
+            }
+            Err(e) => {
+                warn!(error = %e, format = ?dmabuf.format(), "cannot import a client's dma-buf");
+                notifier.failed();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "kms")]
+impl<S: Shell + 'static> DrmSyncobjHandler for Host<S> {
+    fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
+        self.syncobj_state.as_mut()
     }
 }
 
@@ -3441,3 +3651,7 @@ delegate_data_device!(@<S: Shell + 'static> Host<S>);
 delegate_primary_selection!(@<S: Shell + 'static> Host<S>);
 delegate_pointer_gestures!(@<S: Shell + 'static> Host<S>);
 delegate_output!(@<S: Shell + 'static> Host<S>);
+#[cfg(feature = "kms")]
+delegate_dmabuf!(@<S: Shell + 'static> Host<S>);
+#[cfg(feature = "kms")]
+delegate_drm_syncobj!(@<S: Shell + 'static> Host<S>);
