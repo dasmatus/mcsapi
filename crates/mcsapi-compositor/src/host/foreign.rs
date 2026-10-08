@@ -282,6 +282,17 @@ impl<S: Shell + 'static> Host<S> {
     }
 }
 
+impl<S: Shell + 'static> Host<S> {
+    /// The window an `ext_foreign_toplevel_list_v1` handle stands for.
+    pub(super) fn foreign_window(&self, identifier: &str) -> Option<WindowId> {
+        self.foreign
+            .windows
+            .iter()
+            .find(|(_, entry)| entry.ext.identifier() == identifier)
+            .map(|(&id, _)| id)
+    }
+}
+
 impl<S: Shell + 'static> ForeignToplevelListHandler for Host<S> {
     fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
         &mut self.foreign.list

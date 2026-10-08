@@ -19,6 +19,7 @@ use std::{
 };
 
 mod automation;
+mod capture;
 mod cursor;
 mod foreign;
 mod hints;
@@ -328,6 +329,7 @@ pub(crate) struct Host<S: Shell> {
     layer_shell: layer_shell::LayerShell,
     lock: lock::Lock,
     foreign: foreign::Foreign,
+    screen_capture: capture::Captures,
     workspaces: workspaces::Workspaces,
     automation: automation::Automation,
     security: security::Security<S>,
@@ -618,6 +620,7 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         layer_shell: layer_shell::LayerShell::new::<S>(&dh),
         lock: lock::Lock::new::<S>(&dh),
         foreign: foreign::Foreign::new::<S>(&dh),
+        screen_capture: capture::Captures::new::<S>(&dh),
         workspaces: workspaces::Workspaces::new::<S>(&dh),
         security: security::Security::new(&dh, event_loop.handle()),
         text_inputs: {
@@ -1153,6 +1156,7 @@ impl<S: Shell> Host<S> {
         self.update_idle_inhibit();
         self.update_foreign();
         self.update_workspaces();
+        self.update_capture_sessions();
     }
 
     /// Ends a press that was going to content. The rest of it goes to the
@@ -2721,6 +2725,10 @@ impl<S: Shell> Host<S> {
             frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
             draw_surfaces(&mut frame, &lock_elements, scale)?;
         }
+        let bare = self
+            .screen_capture
+            .wants(false)
+            .then(|| read_frame(&gl, screen_px));
         // The arrow's pass also carries texture updates for the shared
         // decorations context, so it is painted, empty, when unused.
         if !matches!(cursor_drawn, cursor::Drawn::Painted) {
@@ -2745,12 +2753,17 @@ impl<S: Shell> Host<S> {
                 )?;
             }
         }
-        let capture = (!self.captures.is_empty()).then(|| read_frame(&gl, screen_px));
+        let with_cursor = (!self.captures.is_empty() || self.screen_capture.wants(true))
+            .then(|| read_frame(&gl, screen_px));
         let _sync = frame.finish()?;
         if locked {
             self.lock.drawn();
         }
         drop(framebuffer);
+        if bare.is_some() || with_cursor.is_some() {
+            self.deliver_captures(bare.as_ref(), with_cursor.as_ref());
+        }
+        let capture = with_cursor.filter(|_| !self.captures.is_empty());
         if offscreen {
             self.present(size)?;
             return Ok(capture);
