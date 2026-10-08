@@ -121,6 +121,10 @@ impl Shell for Tiling {
         tracing::info!(?window, "bell");
     }
 
+    fn idle_inhibited(&mut self, inhibited: bool) {
+        tracing::info!(inhibited, "idle inhibited");
+    }
+
     fn focus(&mut self, window: WindowId) {
         let _ = self.desktop.focus(window);
     }

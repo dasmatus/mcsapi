@@ -629,6 +629,22 @@ pub trait Shell: 'static {
     fn activate(&mut self, window: WindowId) {
         self.focus(window);
     }
+
+    /// A visible surface asked the session to stay awake
+    /// (`zwp_idle_inhibit_v1`, a playing video), or the last such surface
+    /// went away or out of sight. A shell that dims or locks the screen
+    /// after a while of no input should wait while this is `true`.
+    fn idle_inhibited(&mut self, _inhibited: bool) {}
+
+    /// Whether `window` may take the keys the shell otherwise takes
+    /// (`zwp_keyboard_shortcuts_inhibit_manager_v1`) while it has the
+    /// keyboard: a virtual machine or remote desktop viewer passes Super and
+    /// Alt+Tab on to the machine it shows. Asked when it asks; allowed by
+    /// default, as other compositors do. Clicking another window, or
+    /// switching virtual terminals, always gets out.
+    fn inhibit_shortcuts(&mut self, _window: WindowId) -> bool {
+        true
+    }
 }
 
 /// In-process apps the compositor can launch, usually backed by an

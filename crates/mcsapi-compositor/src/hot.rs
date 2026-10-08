@@ -216,6 +216,14 @@ impl<S: Shell> Shell for Hot<S> {
     fn activate(&mut self, window: WindowId) {
         hot!(S::activate, &mut self.0, window)
     }
+
+    fn idle_inhibited(&mut self, inhibited: bool) {
+        hot!(S::idle_inhibited, &mut self.0, inhibited)
+    }
+
+    fn inhibit_shortcuts(&mut self, window: WindowId) -> bool {
+        hot!(S::inhibit_shortcuts, &mut self.0, window)
+    }
 }
 
 /// Starts receiving patches from `dx serve` (a no-op when not launched by it).

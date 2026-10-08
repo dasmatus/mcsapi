@@ -18,7 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod cursor;
 mod hints;
+mod input;
 mod toplevel;
 
 use mcsapi::WindowId;
@@ -45,7 +47,9 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_pointer_gestures,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
     delegate_xdg_shell,
-    desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{
+        PopupKind, PopupManager, Space, Window, WindowSurfaceType, utils::send_frames_surface_tree,
+    },
     input::{
         Seat, SeatHandler, SeatState,
         keyboard::{FilterResult, Keycode, Keysym, KeysymHandle, ModifiersState, XkbConfig},
@@ -101,6 +105,7 @@ use smithay::{
     },
 };
 
+use self::input::TabletInput;
 use crate::{
     Apps, Blur, Capture, ClientRequest, Command, Compositor, GestureEvent, Input, InstanceId, Job,
     KeyInput, KeyRoute, Modifiers, MouseButton, OutputTiming, Placement, Press, Reserved, Role,
@@ -313,6 +318,8 @@ pub(crate) struct Host<S: Shell> {
     primary_selection_state: PrimarySelectionState,
     _hints: hints::Hints,
     toplevels: toplevel::Toplevels,
+    inputs: input::Inputs<S>,
+    cursors: cursor::Cursors,
     text_inputs: TextInputs,
     popups: PopupManager,
     seat: Seat<Self>,
@@ -590,6 +597,8 @@ pub(crate) fn run<S: Shell + 'static>(config: Compositor<S>) -> Result {
         primary_selection_state: PrimarySelectionState::new::<Host<S>>(&dh),
         _hints: hints::Hints::new::<S>(&dh),
         toplevels: toplevel::Toplevels::new::<S>(&dh),
+        inputs: input::Inputs::new(&dh, event_loop.handle()),
+        cursors: cursor::Cursors::new::<S>(&dh),
         text_inputs: {
             TextInputs::global::<S>(&dh);
             TextInputs::default()
@@ -1114,6 +1123,7 @@ impl<S: Shell> Host<S> {
                 keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
             }
         }
+        self.update_idle_inhibit();
     }
 
     /// Ends a press that was going to content. The rest of it goes to the
@@ -1215,6 +1225,7 @@ impl<S: Shell> Host<S> {
     /// reports touchpad gestures, can share it; winit reports none.
     fn input<B: InputBackend>(&mut self, event: InputEvent<B>) {
         self.set_synthetic(false);
+        self.seat_activity();
         match event {
             InputEvent::Keyboard { event } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -1233,18 +1244,26 @@ impl<S: Shell> Host<S> {
                     |host, modifiers, handle| host.filter_key(modifiers, &handle, pressed, keycode),
                 );
             }
+            // Nested, motion only comes as positions; the step between two
+            // is the relative motion games and constraints work with.
             InputEvent::PointerMotionAbsolute { event } => {
                 let size = self.backend.size();
-                self.pointer = event.position_transformed((size.w, size.h).into());
+                let to = event.position_transformed((size.w, size.h).into());
+                let delta = to - self.inputs.absolute.replace(to).unwrap_or(self.pointer);
+                self.pointer = self.relative_motion(to, delta, delta, Event::time(&event));
                 self.pointer_motion(Event::time_msec(&event));
             }
             // A mouse or touchpad on the bare seat moves the pointer by
             // deltas; keep it on the output.
             InputEvent::PointerMotion { event } => {
+                use smithay::backend::input::PointerMotionEvent as _;
                 let size = self.backend.size();
-                let delta = smithay::backend::input::PointerMotionEvent::delta(&event);
-                self.pointer.x = (self.pointer.x + delta.x).clamp(0.0, f64::from(size.w - 1));
-                self.pointer.y = (self.pointer.y + delta.y).clamp(0.0, f64::from(size.h - 1));
+                let delta = event.delta();
+                let mut to = self.pointer + delta;
+                to.x = to.x.clamp(0.0, f64::from(size.w - 1));
+                to.y = to.y.clamp(0.0, f64::from(size.h - 1));
+                self.pointer =
+                    self.relative_motion(to, delta, event.delta_unaccel(), Event::time(&event));
                 self.pointer_motion(Event::time_msec(&event));
             }
             InputEvent::PointerButton { event } => {
@@ -1337,6 +1356,22 @@ impl<S: Shell> Host<S> {
                 },
                 Event::time_msec(&event),
             ),
+            InputEvent::DeviceAdded { device } => {
+                self.tablet_event::<B>(TabletInput::Added(device))
+            }
+            InputEvent::DeviceRemoved { device } => {
+                self.tablet_event::<B>(TabletInput::Removed(device));
+            }
+            InputEvent::TabletToolAxis { event } => {
+                self.tablet_event::<B>(TabletInput::Axis(event))
+            }
+            InputEvent::TabletToolProximity { event } => {
+                self.tablet_event::<B>(TabletInput::Proximity(event));
+            }
+            InputEvent::TabletToolTip { event } => self.tablet_event::<B>(TabletInput::Tip(event)),
+            InputEvent::TabletToolButton { event } => {
+                self.tablet_event::<B>(TabletInput::Button(event));
+            }
             _ => {}
         }
     }
@@ -1924,6 +1959,7 @@ impl<S: Shell> Host<S> {
                 );
                 pointer.frame(self);
             }
+            self.activate_constraint();
             return;
         }
         self.chrome_events.push(egui::Event::PointerMoved(pos));
@@ -1978,6 +2014,7 @@ impl<S: Shell> Host<S> {
             );
             pointer.frame(self);
         }
+        self.activate_constraint();
     }
 
     fn pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
@@ -2169,7 +2206,15 @@ impl<S: Shell> Host<S> {
             };
         }
         let chrome_focus = self.chrome.ctx.memory(|m| m.focused());
-        let route = match shell_key_route(&mut self.shell, &key, consumed_release) {
+        // A client holding the shortcuts (a VM viewer, a remote desktop)
+        // gets keys the shell would take; releases of presses the shell
+        // took before still go to the shell.
+        let shell_route = if self.shortcuts_inhibited() && !consumed_release {
+            KeyRoute::Client
+        } else {
+            shell_key_route(&mut self.shell, &key, consumed_release)
+        };
+        let route = match shell_route {
             // A chrome widget focused from the keyboard (Tab) or by a
             // screen reader keeps the keys until Escape hands them back.
             KeyRoute::Client if chrome_focus.is_some() && pressed && sym == Keysym::Escape => {
@@ -2293,6 +2338,7 @@ impl<S: Shell> Host<S> {
             mcsapi_ui::paint_focus_ring(root.ctx(), accent);
         });
         self.chrome_access = output.platform_output.accesskit_update.take();
+        let chrome_cursor = output.platform_output.cursor_icon;
         let chrome = Pass {
             primitives: self
                 .chrome
@@ -2310,12 +2356,22 @@ impl<S: Shell> Host<S> {
         });
         let mut decorations = Vec::with_capacity(placements.len());
         let mut contents = Vec::with_capacity(placements.len());
+        let mut app_cursor = None;
         for p in &placements {
             decorations.push(self.paint_only(screen, time, |shell, painter| {
                 shell.paint_decoration(painter, p)
             }));
-            contents.push(self.run_internal(p, time));
+            let (pass, cursor) = self.run_internal(p, time).unzip();
+            if self.pointer_target == Some(p.window) {
+                app_cursor = cursor;
+            }
+            contents.push(pass);
         }
+        self.cursors.egui = cursor::from_egui(if self.chrome_wants_pointer() {
+            chrome_cursor
+        } else {
+            app_cursor.unwrap_or_default()
+        });
 
         let drawn = self.draw(
             size,
@@ -2352,6 +2408,11 @@ impl<S: Shell> Host<S> {
                 Some(self.output.clone())
             });
         }
+        if let Some(surface) = self.cursors.surface() {
+            send_frames_surface_tree(surface, &self.output, now, Some(Duration::ZERO), |_, _| {
+                Some(self.output.clone())
+            });
+        }
         self.run_commands();
     }
 
@@ -2381,7 +2442,8 @@ impl<S: Shell> Host<S> {
     }
 
     /// Runs an in-process app's frame inside its content area.
-    fn run_internal(&mut self, p: &Placement, time: f64) -> Option<Pass> {
+    /// Also returns the cursor shape the app wants.
+    fn run_internal(&mut self, p: &Placement, time: f64) -> Option<(Pass, egui::CursorIcon)> {
         let theme = self.shell.theme();
         let focused = p.focused;
         let Some(Content::Internal {
@@ -2446,7 +2508,7 @@ impl<S: Shell> Host<S> {
             title.clone_from(&new_title);
             self.shell.set_title(p.window, &new_title);
         }
-        Some(pass)
+        Some((pass, output.platform_output.cursor_icon))
     }
 
     #[allow(clippy::too_many_arguments)] // one per layer of the frame
@@ -2560,6 +2622,14 @@ impl<S: Shell> Host<S> {
             }
         }
 
+        let on_client = self
+            .seat
+            .get_pointer()
+            .is_some_and(|p| p.current_focus().is_some());
+        let cursor_drawn =
+            self.cursors
+                .drawn(renderer, on_client, self.pointer, self.start.elapsed());
+
         let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
         frame.clear(Color32F::new(0.06, 0.09, 0.16, 1.0), &[full])?;
         let deco = self.decorations.painter.as_mut().expect("created above");
@@ -2607,8 +2677,30 @@ impl<S: Shell> Host<S> {
         for elements in &overlays {
             draw_surfaces(&mut frame, elements, scale)?;
         }
+        // The arrow's pass also carries texture updates for the shared
+        // decorations context, so it is painted, empty, when unused.
+        if !matches!(cursor_drawn, cursor::Drawn::Painted) {
+            cursor.primitives.clear();
+        }
         let deco = self.decorations.painter.as_mut().expect("created above");
         paint(&gl, deco, screen_px, &mut cursor);
+        match cursor_drawn {
+            cursor::Drawn::Hidden | cursor::Drawn::Painted => {}
+            cursor::Drawn::Surface(elements) => draw_surfaces(&mut frame, &elements, scale)?,
+            cursor::Drawn::Image { texture, at, size } => {
+                let dst = Rectangle::new(at, size);
+                Frame::render_texture_from_to(
+                    &mut frame,
+                    &texture,
+                    Rectangle::from_size(texture.size()).to_f64(),
+                    dst,
+                    &[Rectangle::from_size(size)],
+                    &[],
+                    Transform::Normal,
+                    1.0,
+                )?;
+            }
+        }
         let capture = (!self.captures.is_empty()).then(|| read_frame(&gl, screen_px));
         let _sync = frame.finish()?;
         drop(framebuffer);
@@ -3046,7 +3138,9 @@ impl<S: Shell + 'static> SeatHandler for Host<S> {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, seat: &Seat<Self>, image: CursorImageStatus) {
+        self.set_cursor(seat, image);
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| self.display.get_client(s.id()).ok());

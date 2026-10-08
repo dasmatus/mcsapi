@@ -78,7 +78,24 @@ that had the keyboard asked for, or the one a launch puts in
 Input and clipboard: `wl_data_device_manager` (clipboard and drag and drop),
 `zwp_primary_selection_device_manager_v1` (middle-click paste),
 `zwp_pointer_gestures_v1`, `zwp_text_input_manager_v3` (see
-`Shell::text_input`).
+`Shell::text_input`), `zwp_relative_pointer_manager_v1` and
+`zwp_pointer_constraints_v1` (games and remote desktops lock or confine the
+pointer while it is over them and focused), `wp_pointer_warp_v1` (a client
+may move the pointer only within its own surface while it has it), and
+`zwp_tablet_manager_v2` (pens over clients; over the chrome and in-process
+apps a pen moves the pointer, its tip and buttons click).
+`zwp_keyboard_shortcuts_inhibit_manager_v1` passes the shell's shortcuts to
+a focused client that asks, if `Shell::inhibit_shortcuts` allows it.
+
+Cursors: `wp_cursor_shape_manager_v1` and cursor surfaces. Named shapes, and
+the shapes egui asks for over the chrome and in-process apps, come from the
+XCursor theme in `XCURSOR_THEME` at `XCURSOR_SIZE`; the compositor paints its
+own arrow when there is no theme.
+
+Idle: `ext_idle_notifier_v1` tells clients when the seat has been idle, and
+`zwp_idle_inhibit_manager_v1` keeps it awake while an inhibiting surface is
+on screen, reported through `Shell::idle_inhibited` (a video player
+playing).
 
 ## Try it
 
